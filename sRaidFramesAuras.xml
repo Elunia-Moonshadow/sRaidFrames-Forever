@@ -1,0 +1,80 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<!-- Native AuraContainer button templates for WoW: Forever (16001) combat-locked auras -->
+	<ScopedModifier useForbiddenObjectTable="true">
+		<AuraButton name="sRaidFramesAuraIconTemplate" inherits="CustomAuraButtonTemplate" virtual="true">
+			<Size x="12" y="12"/>
+			<Layers>
+				<Layer level="BACKGROUND">
+					<Texture parentKey="Border" setAllPoints="true">
+						<Color r="0.05" g="0.05" b="0.05" a="0.95"/>
+					</Texture>
+				</Layer>
+				<Layer level="ARTWORK">
+					<Texture parentKey="Icon">
+						<Anchors>
+							<Anchor point="TOPLEFT" x="1" y="-1"/>
+							<Anchor point="BOTTOMRIGHT" x="-1" y="1"/>
+						</Anchors>
+						<TexCoords left="0.08" right="0.92" top="0.08" bottom="0.92"/>
+					</Texture>
+				</Layer>
+			</Layers>
+			<Frames>
+				<Cooldown parentKey="Cooldown" inherits="CooldownFrameTemplate" setAllPoints="true"
+					reverse="true" hideCountdownNumbers="true" drawEdge="false" drawBling="false"/>
+				<Frame parentKey="CountHolder" setAllPoints="true">
+					<Layers>
+						<Layer level="OVERLAY">
+							<FontString parentKey="Count" inherits="NumberFontNormalSmall" justifyH="RIGHT">
+								<Anchors>
+									<Anchor point="BOTTOMRIGHT" x="1" y="0"/>
+								</Anchors>
+							</FontString>
+						</Layer>
+					</Layers>
+				</Frame>
+			</Frames>
+		</AuraButton>
+
+		<AuraButton name="sRaidFramesDispelIconTemplate" inherits="CustomAuraButtonTemplate" virtual="true">
+			<Size x="14" y="14"/>
+			<Layers>
+				<Layer level="BACKGROUND">
+					<Texture parentKey="DispelBorder">
+						<Anchors>
+							<Anchor point="TOPLEFT" x="-1" y="1"/>
+							<Anchor point="BOTTOMRIGHT" x="1" y="-1"/>
+						</Anchors>
+					</Texture>
+				</Layer>
+				<Layer level="ARTWORK">
+					<Texture parentKey="Icon">
+						<Anchors>
+							<Anchor point="TOPLEFT" x="1" y="-1"/>
+							<Anchor point="BOTTOMRIGHT" x="-1" y="1"/>
+						</Anchors>
+						<TexCoords left="0.08" right="0.92" top="0.08" bottom="0.92"/>
+					</Texture>
+				</Layer>
+				<Layer level="OVERLAY">
+					<Texture parentKey="DispelGlow" alphaMode="BLEND"/>
+				</Layer>
+			</Layers>
+			<Frames>
+				<Cooldown parentKey="Cooldown" inherits="CooldownFrameTemplate" setAllPoints="true"
+					reverse="true" hideCountdownNumbers="true" drawEdge="false" drawBling="false"/>
+				<Frame parentKey="CountHolder" setAllPoints="true">
+					<Layers>
+						<Layer level="OVERLAY">
+							<FontString parentKey="Count" inherits="NumberFontNormalSmall" justifyH="RIGHT">
+								<Anchors>
+									<Anchor point="BOTTOMRIGHT" x="1" y="0"/>
+								</Anchors>
+							</FontString>
+						</Layer>
+					</Layers>
+				</Frame>
+			</Frames>
+		</AuraButton>
+	</ScopedModifier>
+</Ui>

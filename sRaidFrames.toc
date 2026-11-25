@@ -1,0 +1,51 @@
+## Interface: 16001, 16000, 120001, 120000
+## Title: sRaidFrames
+## Notes: CT_RaidAssist style raid frames (WoW: Forever / Classic Edition)
+## Notes-koKR: 공격대 도우미 스타일의 공격대 프레임
+## Notes-zhCN: CT_RaidAssist 风格的团队框体（魔兽世界：无限 专版 - 支持牧师Buff/驱散高亮/DBM警告）
+## Notes-zhTW: CT_RaidAssist 風格的團隊框架（魔獸世界：永恆 專版 - 支援牧師Buff/驅散高亮/DBM警告）
+## Notes-deDE: Schlachtzugframes im Stil von CT_RaidAssist
+## Version: V1.1.1
+## Author: Saroz, Nevcairiel, Stolenlegacy, Elunia-Moonshadow (Forever版本)
+## X-Email: saroz@random-guild.com
+## X-Category: Raid
+## X-License: GPLv2
+## OptionalDeps: Ace3, LibSharedMedia-3.0, AceGUI-3.0-SharedMediaWidgets, LibResInfo-1.0, LibDBIcon-1.0, SharedMedia, Clique, DBM-Core
+## SavedVariables: sRaidFramesDB
+
+#@no-lib-strip@
+libs\LibStub\LibStub.lua
+libs\CallbackHandler-1.0\CallbackHandler-1.0.xml
+#@end-no-lib-strip@
+
+sRaidFramesCompat.lua
+
+libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+
+#@no-lib-strip@
+libs\AceAddon-3.0\AceAddon-3.0.xml
+libs\AceDB-3.0\AceDB-3.0.xml
+libs\AceDBOptions-3.0\AceDBOptions-3.0.xml
+libs\AceEvent-3.0\AceEvent-3.0.xml
+libs\AceTimer-3.0\AceTimer-3.0.xml
+libs\AceBucket-3.0\AceBucket-3.0.xml
+libs\AceConsole-3.0\AceConsole-3.0.xml
+libs\AceLocale-3.0\AceLocale-3.0.xml
+libs\AceGUI-3.0\AceGUI-3.0.xml
+libs\AceConfig-3.0\AceConfig-3.0.xml
+
+libs\LibSharedMedia-3.0\lib.xml
+
+libs\AceGUI-3.0-SharedMediaWidgets\widget.xml
+
+libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+libs\LibResInfo-1.0\LibResInfo-1.0.lua
+#@end-no-lib-strip@
+
+locales\locale.xml
+
+sRaidFramesAuras.xml
+sRaidFrames.lua
+sRaidFramesOptions.lua
+sRaidFramesLayout.lua
+sRaidFramesGroupFilter.lua

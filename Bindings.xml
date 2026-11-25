@@ -1,0 +1,24 @@
+<Bindings>
+	<Binding name="ShowHideRaidWindows" header="sRaidFrames">
+		if sRaidFrames and sRaidFrames.ToggleVisibility then
+			sRaidFrames:ToggleVisibility()
+		end
+	</Binding>
+	<Binding name="ToggleBuffDebuffview">
+		if not sRaidFrames or not sRaidFrames.opt then return end
+		local cur = sRaidFrames.opt.BuffType
+		if cur == "both" then
+			sRaidFrames.opt.BuffType = "debuffs"
+		elseif cur == "debuffs" then
+			sRaidFrames.opt.BuffType = "buffs"
+		else
+			sRaidFrames.opt.BuffType = "both"
+		end
+		sRaidFrames:RefreshAllNativeAuraContainers()
+	</Binding>
+	<Binding name="Toggledisplayofonlydispellabledebuffs">
+		if not sRaidFrames or not sRaidFrames.opt then return end
+		sRaidFrames.opt.ShowOnlyDispellable = not sRaidFrames.opt.ShowOnlyDispellable
+		sRaidFrames:RefreshAllNativeAuraContainers()
+	</Binding>
+</Bindings>
