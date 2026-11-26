@@ -1,5 +1,11 @@
 # sRaidFrames (WoW: Forever Edition) Changelog
 
+## V1.1.2 (2026-11-26)
+- **Combat-Safe Blizzard Frame Hiding**: Replaced `RegisterStateDriver` / `Hide()` calls on Blizzard's EditMode-managed `PartyFrame` and `CompactRaidFrameContainer` in `HideBlizzard()` with out-of-combat hidden-parent reparenting (`sRaidFramesHiddenBlizzParent`), eliminating `ADDON_ACTION_FORBIDDEN` errors during `GROUP_ROSTER_UPDATE` (`UpdateRoster`).
+- **Pet Tooltip Fix**: Updated CTRA-style raid tooltips (`UnitTooltip`) to detect pet units (`raidpet*`) via `IsPetUnit()` and fall back to Blizzard's native `GameTooltip:SetUnit()` instead of reading owner metadata via `GetRaidRosterInfo(frame.id)`.
+- **Out-of-the-Box Defaults**: Changed default settings to `Locked = true` (preventing accidental frame dragging in combat) and `ShowSelfInParty = true` (showing all 5 party members by default).
+- **All-Class Option & Locale Clarity**: Updated `/srf` aura option labels, TOC notes, and all 9 language locales (`enUS`, `zhCN`, `zhTW`, `deDE`, `esES`, `esMX`, `frFR`, `koKR`, `ruRU`) to clearly reflect all-class & healing buff support instead of Priest-only wording.
+
 ## V1.1.1 (2026-11-25)
 - **Refined Card Contrast**: Tuned the default sky-blue card backdrop (`{0.22, 0.35, 0.50, 0.92}`) to preserve the classic CTRA look while giving Mage and other light class-colored names sharper readability.
 - **Instant Unit & Group-Join Sync**: Expanded immediate `UpdateAll` refresh to all newly assigned party/raid frames upon `unit` attribute binding, with non-empty name fallback protection.

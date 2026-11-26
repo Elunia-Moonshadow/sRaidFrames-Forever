@@ -2,10 +2,10 @@
 ## Title: sRaidFrames
 ## Notes: CT_RaidAssist style raid frames (WoW: Forever / Classic Edition)
 ## Notes-koKR: 공격대 도우미 스타일의 공격대 프레임
-## Notes-zhCN: CT_RaidAssist 风格的团队框体（魔兽世界：无限 专版 - 支持牧师Buff/驱散高亮/DBM警告）
-## Notes-zhTW: CT_RaidAssist 風格的團隊框架（魔獸世界：永恆 專版 - 支援牧師Buff/驅散高亮/DBM警告）
+## Notes-zhCN: CT_RaidAssist 风格的团队框体（魔兽世界：无限 专版 - 支持职业Buff/驱散高亮/DBM警告）
+## Notes-zhTW: CT_RaidAssist 風格的團隊框架（魔獸世界：永恆 專版 - 支援職業Buff/驅散高亮/DBM警告）
 ## Notes-deDE: Schlachtzugframes im Stil von CT_RaidAssist
-## Version: V1.1.1
+## Version: V1.1.2
 ## Author: Saroz, Nevcairiel, Stolenlegacy, Elunia-Moonshadow (Forever版本)
 ## X-Email: saroz@random-guild.com
 ## X-Category: Raid

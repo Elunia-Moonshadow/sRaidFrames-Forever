@@ -92,7 +92,7 @@ local DISPEL_BORDER_COLORS = {
 }
 
 local defaults = { profile = {
-	Locked				= false,
+	Locked				= true,
 	HideBlizzard		= true,
 	HealthFormat		= 'percent',
 	HideMaxHealth		= false,
@@ -119,7 +119,7 @@ local defaults = { profile = {
 	DBMWarningDuration	= 6,
 	BossWhitelist		= {},
 	ShowInParty			= true,
-	ShowSelfInParty		= false,
+	ShowSelfInParty		= true,
 	PartyGrowth			= "down",
 	BackgroundColor		= {r = 0.22, g = 0.35, b = 0.50, a = 0.92},
 	classspelltable 	= {['*'] = {IsFiltered = false}},
@@ -558,6 +558,12 @@ function sRaidFrames:HideBlizzard()
 	end
 	local shouldHide = self.opt.HideBlizzard and self.opt.Show and not self._inEditMode
 	self._blizzHidden = self._blizzHidden or {}
+	self._blizzOriginalParent = self._blizzOriginalParent or {}
+	if not self._hiddenBlizzParent then
+		local p = CreateFrame("Frame", "sRaidFramesHiddenBlizzParent", UIParent)
+		p:Hide()
+		self._hiddenBlizzParent = p
+	end
 
 	local targets = {
 		{ frame = _G.CompactRaidFrameContainer, hide = shouldHide },
@@ -570,12 +576,17 @@ function sRaidFrames:HideBlizzard()
 			if entry.hide then
 				if not self._blizzHidden[f] then
 					self._blizzHidden[f] = true
-					pcall(RegisterStateDriver, f, "visibility", "hide")
-					pcall(f.Hide, f)
+					if f:GetParent() ~= self._hiddenBlizzParent then
+						self._blizzOriginalParent[f] = f:GetParent() or UIParent
+						pcall(f.SetParent, f, self._hiddenBlizzParent)
+					end
 				end
 			elseif self._blizzHidden[f] then
 				self._blizzHidden[f] = nil
-				pcall(UnregisterStateDriver, f, "visibility")
+				local origParent = self._blizzOriginalParent[f] or UIParent
+				if f:GetParent() == self._hiddenBlizzParent then
+					pcall(f.SetParent, f, origParent)
+				end
 				if f.UpdateSystemSettingPosition then
 					pcall(f.UpdateSystemSettingPosition, f)
 				end
@@ -3659,7 +3670,7 @@ function sRaidFrames:UnitTooltip(frame)
 
 	GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
 
-	if self.opt.UnitTooltipType == "blizz" or not frame.id or not IsInRaid() then
+	if self.opt.UnitTooltipType == "blizz" or not frame.id or not IsInRaid() or self:IsPetUnit(unit) then
 		pcall(GameTooltip.SetUnit, GameTooltip, unit)
 		GameTooltip:Show()
 		return
