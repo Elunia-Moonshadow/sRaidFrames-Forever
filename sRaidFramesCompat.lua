@@ -613,6 +613,7 @@ Compat.DefensiveBuffSpellIDs = {
 	[29166] = true, [456195] = true, -- Innervate (激活)
 	[11958] = true, [27619] = true, [45438] = true, -- Ice Block (寒冰屏障)
 	[19263] = true, -- Deterrence (威慑)
+	[5384] = true, -- Feign Death (假死)
 	[462873] = true, -- Cloak of Shadows (暗影斗篷)
 	[433255] = true, -- Shamanistic Rage (萨满之怒)
 }

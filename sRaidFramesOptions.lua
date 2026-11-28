@@ -23,6 +23,9 @@ BINDING_NAME_Toggledisplayofonlydispellabledebuffs = L["Toggle display of only d
 local function SetVar(info, val)
 	local var = info.arg
 	sRaidFrames.db.profile[var] = val
+	if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" and sRaidFrames.RefreshTestFrames then
+		sRaidFrames:RefreshTestFrames()
+	end
 end
 
 local function GetVar(info)
@@ -63,10 +66,35 @@ sRaidFrames.options = {
 				if sRaidFrames.petGroup and sRaidFrames.petGroup.header then
 					sRaidFrames:UpdateTitleVisibility(sRaidFrames.petGroup.header)
 				end
+				if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+					sRaidFrames:RefreshTestFrames()
+				end
 			end,
 			disabled = function() return not sRaidFrames.opt.Show or IsInCombat() end,
 			order = 2,
 			width = "half",
+		},
+
+		testmode = {
+			name = L["Test Preview Mode"],
+			type = "select",
+			desc = L["Preview frames solo (Party with portraits & pets, or 10/20/40-man Raid). Drag out of combat; exits automatically on combat."],
+			get = function()
+				return sRaidFrames.testMode or "off"
+			end,
+			set = function(info, value)
+				sRaidFrames:SetTestMode(value)
+			end,
+			values = {
+				["off"]    = L["Off"],
+				["party"]  = L["5-Player Party (Portraits & Pets)"],
+				["raid10"] = L["10-Player Raid (2 Groups + Pets)"],
+				["raid20"] = L["20-Player Raid (4 Groups + Pets)"],
+				["raid40"] = L["40-Player Raid (8 Groups + Pets)"],
+			},
+			disabled = IsInCombat,
+			width = "double",
+			order = 3.2,
 		},
 
 		show = {
@@ -114,6 +142,9 @@ sRaidFrames.options = {
 				sRaidFrames.opt.ShowSelfInParty = value
 				sRaidFrames:SetGroupFilters()
 				sRaidFrames:UpdateRoster()
+				if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+					sRaidFrames:RefreshTestFrames()
+				end
 			end,
 			disabled = function() return not sRaidFrames.opt.Show or not sRaidFrames.opt.ShowInParty or IsInCombat() end,
 			order = 3.6,
@@ -185,9 +216,9 @@ sRaidFrames.options = {
 							get = function() return nil end,
 							set = function(info, layout)
 								local gf1 = sRaidFrames.groupframes and sRaidFrames.groupframes[1]
-								local x = (gf1 and gf1:GetLeft()) or 160
+								local x = (gf1 and gf1:GetLeft()) or 24
 								local top = gf1 and gf1:GetTop()
-								local y = top and (top - UIParent:GetEffectiveScale() / sRaidFrames.master:GetEffectiveScale() * UIParent:GetTop()) or -140
+								local y = top and (top - UIParent:GetEffectiveScale() / sRaidFrames.master:GetEffectiveScale() * UIParent:GetTop()) or -155
 								sRaidFrames:PositionLayout(layout, x, y)
 							end,
 							values = {["ctra"] = L["CT_RaidAssist"], ["horizontal"] = L["Horizontal"], ["vertical"] = L["Vertical"]},
@@ -207,6 +238,9 @@ sRaidFrames.options = {
 								sRaidFrames.opt.Scale = value
 								if sRaidFrames.master then
 									sRaidFrames.master:SetScale(value)
+								end
+								if sRaidFrames.testMaster then
+									sRaidFrames.testMaster:SetScale(value)
 								end
 								sRaidFrames:RestorePosition()
 							end,
@@ -447,17 +481,7 @@ sRaidFrames.options = {
 							end,
 							set = function(info, value)
 								sRaidFrames.opt.Texture = value
-
-								local tex = Media:Fetch("statusbar", sRaidFrames.opt.Texture)
-								for _, f in pairs(sRaidFrames.frames) do
-									f.hpbar:SetStatusBarTexture(tex)
-									f.mpbar:SetStatusBarTexture(tex)
-									if f.healbar then f.healbar:SetStatusBarTexture(tex) end
-									if f.petframe then
-										if f.petframe.hpbar then f.petframe.hpbar:SetStatusBarTexture(tex) end
-										if f.petframe.healbar then f.petframe.healbar:SetStatusBarTexture(tex) end
-									end
-								end
+								sRaidFrames:SetAllStatusBarTexture(Media:Fetch("statusbar", sRaidFrames.opt.Texture))
 							end,
 							values = AceGUIWidgetLSMlists.statusbar,
 							order = 1,
@@ -516,6 +540,9 @@ sRaidFrames.options = {
 								for _, frame in pairs(sRaidFrames.frames) do
 									frame:SetBackdropBorderColor(r, g, b, a)
 								end
+								if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+									sRaidFrames:RefreshTestFrames()
+								end
 							end,
 							hasAlpha = true,
 							disabled = function() return not sRaidFrames.opt.Border end,
@@ -534,6 +561,9 @@ sRaidFrames.options = {
 
 								for _, frame in pairs(sRaidFrames.frames) do
 									frame.hpbar.text:SetTextColor(r, g, b, a)
+								end
+								if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+									sRaidFrames:RefreshTestFrames()
 								end
 							end,
 							hasAlpha = false,
@@ -647,6 +677,17 @@ sRaidFrames.options = {
 							end,
 							order = 4,
 						},
+						absorbbar = {
+							name = L["Show absorb shield bar"],
+							type = "toggle",
+							desc = L["Display a 3px absorb shield bar along the top edge of health bars"],
+							get = function() return sRaidFrames.opt.ShowAbsorbBar ~= false end,
+							set = function(info, value)
+								sRaidFrames.opt.ShowAbsorbBar = value
+								sRaidFrames:UpdateAllUnits()
+							end,
+							order = 4.5,
+						},
 						frequentUpdates = {
 							name = L["Frequent Health Updates"],
 							type = "toggle",
@@ -743,6 +784,9 @@ sRaidFrames.options = {
 								end
 								if sRaidFrames.petGroup and sRaidFrames.petGroup.header then
 									sRaidFrames:UpdateTitleVisibility(sRaidFrames.petGroup.header)
+								end
+								if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+									sRaidFrames:RefreshTestFrames()
 								end
 							end,
 							disabled = function() return not sRaidFrames.opt.Locked or IsInCombat() end,
@@ -978,6 +1022,9 @@ sRaidFrames.options = {
 											if f.petframe.SetVisualAlpha then f.petframe:SetVisualAlpha(1) else f.petframe:SetAlpha(1) end
 										end
 									end
+								end
+								if sRaidFrames.testMode and sRaidFrames.testMode ~= "off" then
+									sRaidFrames:RefreshTestFrames()
 								end
 							end,
 							order = 1,

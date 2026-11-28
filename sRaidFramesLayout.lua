@@ -32,7 +32,7 @@ end
 
 function sRaidFrames:ApplyLayout()
 	local layout = self:GetLayout()
-	local inParty = not IsInRaid()
+	local inParty = not (sRaidFrames.IsEffectiveInRaid and sRaidFrames:IsEffectiveInRaid() or IsInRaid())
 	local w = self.opt.FrameWidth or layout.unitframeWidth
 	local hpH = self.opt.HealthBarHeight or 12
 	local mpH = self.opt.PowerBarHeight or 4
@@ -71,6 +71,16 @@ function sRaidFrames:ApplyLayout()
 	for _, f in pairs(self.frames) do
 		layout.StyleUnitFrame(f)
 	end
+	if self.testFrames then
+		for _, f in pairs(self.testFrames) do
+			layout.StyleUnitFrame(f)
+		end
+	end
+	if self.testPetFrames then
+		for _, f in pairs(self.testPetFrames) do
+			layout.StyleUnitFrame(f)
+		end
+	end
 	if self.SyncAttachedPetWatches then
 		self:SyncAttachedPetWatches()
 	end
@@ -92,7 +102,7 @@ local function ApplyCommonUnitStyle(f, padX, padY)
 		sRaidFramesCompat.AttachSafeUnitBackdrop(f)
 	end
 	local opt = sRaidFrames.opt
-	local inParty = not IsInRaid()
+	local inParty = not (sRaidFrames.IsEffectiveInRaid and sRaidFrames:IsEffectiveInRaid() or IsInRaid())
 	local w = opt.FrameWidth or 90
 	local hpH = opt.HealthBarHeight or 12
 	local mpH = opt.PowerBarHeight or 4
@@ -190,10 +200,14 @@ local function ApplyCommonUnitStyle(f, padX, padY)
 			sRaidFrames:SyncHealPredictionOrientation(f)
 		end
 	end
+	if f.absorbbar then
+		f.absorbbar:SetWidth(hpBarW)
+		f.absorbbar:SetHeight(math.min(3, hpH))
+	end
 	sRaidFrames:SetWHP(f.mpbar, hpBarW, mpH, "TOPLEFT", f.hpbar, "BOTTOMLEFT", 0, 0)
 
 	sRaidFrames:SetWHP(f.hpbar.text, hpBarW, hpH, "CENTER", f.hpbar, "CENTER", 0, 0)
-	sRaidFrames:SetWHP(f.statustext, hpBarW, mpH, "CENTER", f.mpbar, "CENTER", 0, 0)
+	sRaidFrames:SetWHP(f.statustext, hpBarW, math.max(mpH, math.max(8, fontSize - 2) + 2), "CENTER", f.mpbar, "CENTER", 0, 0)
 	if f.classIcon then
 		local cSize = math.max(10, math.min(20, hpH))
 		f.classIcon:SetSize(cSize, cSize)

@@ -25,6 +25,9 @@ function sRaidFrames:GetGroupSetup(name)
 end
 
 function sRaidFrames:RenameGroupSetup(old, new)
+	if not new or new == "" or new == old then
+		return self.opt.GroupSetups[old]
+	end
 	self.opt.GroupSetups[new] = self.opt.GroupSetups[old]
 	self.opt.GroupSetups[old] = nil
 	if self.opt.GroupSetup == old then

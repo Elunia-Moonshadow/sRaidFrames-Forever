@@ -1,5 +1,12 @@
 # sRaidFrames (WoW: Forever Edition) Changelog
 
+## V1.1.3 (2026-11-27)
+- **Out-of-Combat Test Mode (`/srf`)**: Added standalone solo preview modes for 5-player Party (with 2D portraits) and 10 / 20 / 40-player Raid layouts including attached and separate pet frames; supports real-time position dragging when unlocked, rich unit state previews (offline/dead/low HP/debuff highlight/mana/heal prediction/absorb), and automatic exit on entering combat or joining a real group.
+- **Top 3px Absorb Shield Bar**: Added a compact 3px golden-cyan absorb shield status bar (`ShowAbsorbBar`, enabled by default) across player and standalone pet unit frames driven by `UnitGetDetailedHealPrediction` / `UnitGetTotalAbsorbs`.
+- **In-Combat Hunter Feign Death Display**: Displays green Feign Death status text (via `UnitIsFeignDeath`) and the top-right skill icon in combat without misreporting the hunter as dead, with adjusted raid status text height to prevent clipping.
+- **Steel-Blue Translucent Backdrop & Classic Anchor**: Refined the default card `BackgroundColor` to `{0.08, 0.16, 0.28, 0.58}` (deep steel-blue at 58% opacity) so Mage, Shaman, and Priest class-colored names stay sharp across dark and bright scenes, with classic left-side default anchor `(24, -155)`.
+- **16001 Combat Compatibility & Stability Polish**: Restored `HideBlizzard()` to native non-tainting `AddRoleset("alwaysBlocked")` (with safe `SetAlpha` fallback), updated embedded `LibResInfo-1.0` (r31) for 16001 secret-value safety, and refined dual-name labels, ready check handling, and vehicle state sync.
+
 ## V1.1.2 (2026-11-26)
 - **Combat-Safe Blizzard Frame Hiding**: Replaced `RegisterStateDriver` / `Hide()` calls on Blizzard's EditMode-managed `PartyFrame` and `CompactRaidFrameContainer` in `HideBlizzard()` with out-of-combat hidden-parent reparenting (`sRaidFramesHiddenBlizzParent`), eliminating `ADDON_ACTION_FORBIDDEN` errors during `GROUP_ROSTER_UPDATE` (`UpdateRoster`).
 - **Pet Tooltip Fix**: Updated CTRA-style raid tooltips (`UnitTooltip`) to detect pet units (`raidpet*`) via `IsPetUnit()` and fall back to Blizzard's native `GameTooltip:SetUnit()` instead of reading owner metadata via `GetRaidRosterInfo(frame.id)`.

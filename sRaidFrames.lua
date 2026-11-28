@@ -121,7 +121,7 @@ local defaults = { profile = {
 	ShowInParty			= true,
 	ShowSelfInParty		= true,
 	PartyGrowth			= "down",
-	BackgroundColor		= {r = 0.22, g = 0.35, b = 0.50, a = 0.92},
+	BackgroundColor		= {r = 0.08, g = 0.16, b = 0.28, a = 0.58},
 	classspelltable 	= {['*'] = {IsFiltered = false}},
 	BorderColor			= {r = 1, g = 1, b = 1, a = 1},
 	HealthTextColor		= {r = 1, g = 1, b = 1, a = 1},
@@ -160,6 +160,7 @@ local defaults = { profile = {
 	HighlightTarget		= true,
 	HighlightHeals		= true,
 	ShowHealPrediction	= true,
+	ShowAbsorbBar		= true,
 	HighlightDebuffs 	= "onlyself",
 	Layout				= "CTRA_WithBorders",
 	GroupSetup			= L["By group"],
@@ -552,43 +553,43 @@ function sRaidFrames:UpdateVisibilityDriver()
 end
 
 function sRaidFrames:HideBlizzard()
-	if privateFuncs.IsInCombat() then
+	if InCombatLockdown() then
 		self:ScheduleLeaveCombatAction("HideBlizzard")
 		return
 	end
 	local shouldHide = self.opt.HideBlizzard and self.opt.Show and not self._inEditMode
-	self._blizzHidden = self._blizzHidden or {}
-	self._blizzOriginalParent = self._blizzOriginalParent or {}
-	if not self._hiddenBlizzParent then
-		local p = CreateFrame("Frame", "sRaidFramesHiddenBlizzParent", UIParent)
-		p:Hide()
-		self._hiddenBlizzParent = p
-	end
+	self._blizzTagged = self._blizzTagged or {}
+	self._blizzAlphaHidden = self._blizzAlphaHidden or {}
 
+	-- Use Forever (16001) native non-tainting roleset "alwaysBlocked" on PartyFrame and
+	-- CompactRaidFrameContainer (same mechanism as HealKit): hides both visuals and mouse
+	-- clicks without touching Edit Mode or protected methods, and restores cleanly in Edit Mode.
 	local targets = {
-		{ frame = _G.CompactRaidFrameContainer, hide = shouldHide },
 		{ frame = _G.PartyFrame, hide = shouldHide and self.opt.ShowInParty },
+		{ frame = _G.CompactRaidFrameContainer, hide = shouldHide },
 	}
 
 	for _, entry in ipairs(targets) do
 		local f = entry.frame
 		if f and not (f.IsForbidden and f:IsForbidden()) then
-			if entry.hide then
-				if not self._blizzHidden[f] then
-					self._blizzHidden[f] = true
-					if f:GetParent() ~= self._hiddenBlizzParent then
-						self._blizzOriginalParent[f] = f:GetParent() or UIParent
-						pcall(f.SetParent, f, self._hiddenBlizzParent)
+			if f.AddRoleset and f.RemoveRoleset then
+				if entry.hide and not self._blizzTagged[f] then
+					if pcall(f.AddRoleset, f, "alwaysBlocked") then
+						self._blizzTagged[f] = true
+					end
+				elseif not entry.hide and self._blizzTagged[f] then
+					if pcall(f.RemoveRoleset, f, "alwaysBlocked") then
+						self._blizzTagged[f] = nil
 					end
 				end
-			elseif self._blizzHidden[f] then
-				self._blizzHidden[f] = nil
-				local origParent = self._blizzOriginalParent[f] or UIParent
-				if f:GetParent() == self._hiddenBlizzParent then
-					pcall(f.SetParent, f, origParent)
-				end
-				if f.UpdateSystemSettingPosition then
-					pcall(f.UpdateSystemSettingPosition, f)
+			else
+				-- Fallback for clients without rolesets: opacity on the top frame only
+				if entry.hide then
+					self._blizzAlphaHidden[f] = true
+					pcall(f.SetAlpha, f, 0)
+				elseif self._blizzAlphaHidden[f] then
+					self._blizzAlphaHidden[f] = nil
+					pcall(f.SetAlpha, f, 1)
 				end
 			end
 		end
@@ -649,21 +650,30 @@ end
 
 function sRaidFrames:PLAYER_REGEN_ENABLED()
 	self.InCombat = false
-	for unit in pairs(self:GetAllUnits()) do
-		self:UpdateAuras(unit)
+	if self.enabled then
+		for unit in pairs(self:GetAllUnits()) do
+			self:UpdateAuras(unit)
+		end
 	end
 	local queue = self.leaveCombatActions
 	if not queue then return end
 	self.leaveCombatActions = nil
 	for _, info in ipairs(queue) do
 		if info.callback and self[info.callback] then
-			self[info.callback](self, info.arg)
+			local ok, err = pcall(self[info.callback], self, info.arg)
+			if not ok and geterrorhandler then
+				geterrorhandler()(err)
+			end
 		end
 	end
 end
 
 function sRaidFrames:PLAYER_REGEN_DISABLED()
 	self.InCombat = true
+	if self.testMode and self.testMode ~= "off" and self.ExitTestMode then
+		self:ExitTestMode(true)
+	end
+	if not self.enabled then return end
 	for unit in pairs(self:GetAllUnits()) do
 		self:UpdateAuras(unit)
 	end
@@ -719,6 +729,9 @@ function sRaidFrames:OnEnable()
 	Media.RegisterCallback(self, "LibSharedMedia_SetGlobal")
 
 	self:InitDBMIntegration()
+	self.InCombat = InCombatLockdown() and true or false
+	self:RegisterEvent("PLAYER_REGEN_DISABLED")
+	self:RegisterEvent("PLAYER_REGEN_ENABLED")
 
 	self:CreateFrames()
 	self:UpdateRoster()
@@ -826,8 +839,11 @@ function sRaidFrames:UpdateRaidTargets()
 end
 
 local ShouldUpdateFrameCache = false
+local hpcache = {}
+local hpmaxcache = {}
 
 function sRaidFrames:EnableFrames()
+	if self.enabled then return end
 	self.enabled = true
 	self.statusstate = {}
 	ShouldUpdateFrameCache = true
@@ -854,6 +870,7 @@ function sRaidFrames:EnableFrames()
 	self:RegisterEvent("RAID_TARGET_UPDATE", "UpdateRaidTargets")
 
 	pcall(self.RegisterEvent, self, "UNIT_HEAL_PREDICTION", "UpdateHealsOnUnit")
+	pcall(self.RegisterEvent, self, "UNIT_ABSORB_AMOUNT_CHANGED", "UpdateAbsorbsOnUnit")
 	pcall(self.RegisterEvent, self, "UNIT_THREAT_SITUATION_UPDATE", "UpdateUnitThreat")
 	pcall(self.RegisterEvent, self, "UNIT_SPELLCAST_START", "OnUnitSpellcastStart")
 	pcall(self.RegisterEvent, self, "UNIT_SPELLCAST_CHANNEL_START", "OnUnitSpellcastStart")
@@ -881,8 +898,6 @@ function sRaidFrames:EnableFrames()
 	self:RegisterEvent("READY_CHECK")
 	self:RegisterEvent("READY_CHECK_CONFIRM")
 	self:RegisterEvent("READY_CHECK_FINISHED")
-	self:RegisterEvent("PLAYER_REGEN_ENABLED")
-	self:RegisterEvent("PLAYER_REGEN_DISABLED")
 
 	self.rangeTimer = self:ScheduleRepeatingTimer("RangeCheck", self.opt.RangeFrequency)
 
@@ -909,6 +924,8 @@ function sRaidFrames:DisableFrames()
 	if not self.enabled then return end
 	self.statusstate = {}
 	self.FramesByUnit = {}
+	wipe(hpcache)
+	wipe(hpmaxcache)
 	ShouldUpdateFrameCache = true
 
 	if self.healthBucket then self:UnregisterBucket(self.healthBucket); self.healthBucket = nil end
@@ -924,6 +941,7 @@ function sRaidFrames:DisableFrames()
 	self:UnregisterEvent("RAID_TARGET_UPDATE")
 
 	pcall(self.UnregisterEvent, self, "UNIT_HEAL_PREDICTION")
+	pcall(self.UnregisterEvent, self, "UNIT_ABSORB_AMOUNT_CHANGED")
 	pcall(self.UnregisterEvent, self, "UNIT_THREAT_SITUATION_UPDATE")
 	pcall(self.UnregisterEvent, self, "UNIT_SPELLCAST_START")
 	pcall(self.UnregisterEvent, self, "UNIT_SPELLCAST_CHANNEL_START")
@@ -933,8 +951,6 @@ function sRaidFrames:DisableFrames()
 	self:UnregisterEvent("READY_CHECK")
 	self:UnregisterEvent("READY_CHECK_CONFIRM")
 	self:UnregisterEvent("READY_CHECK_FINISHED")
-	self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-	self:UnregisterEvent("PLAYER_REGEN_DISABLED")
 
 	if Banzai and not _G.UnitThreatSituation then
 		Banzai:UnregisterCallback(sRaidFrames.Banzai_Callback)
@@ -943,6 +959,10 @@ function sRaidFrames:DisableFrames()
 	if self.rangeTimer then
 		self:CancelTimer(self.rangeTimer)
 		self.rangeTimer = nil
+	end
+	if self.readyCheckTimer then
+		self:CancelTimer(self.readyCheckTimer, true)
+		self.readyCheckTimer = nil
 	end
 
 	if ResInfo then
@@ -970,18 +990,36 @@ function sRaidFrames:ToggleFrequentUpdates()
 	end
 end
 
+function sRaidFrames:SetAllStatusBarTexture(texture)
+	local function applyTex(frame)
+		if not frame then return end
+		if frame.hpbar then frame.hpbar:SetStatusBarTexture(texture) end
+		if frame.mpbar then frame.mpbar:SetStatusBarTexture(texture) end
+		if frame.healbar then frame.healbar:SetStatusBarTexture(texture) end
+		if frame.absorbbar then frame.absorbbar:SetStatusBarTexture(texture) end
+		if frame.petframe then
+			if frame.petframe.hpbar then frame.petframe.hpbar:SetStatusBarTexture(texture) end
+			if frame.petframe.healbar then frame.petframe.healbar:SetStatusBarTexture(texture) end
+		end
+	end
+	for _, frame in pairs(self.frames) do
+		applyTex(frame)
+	end
+	if self.testFrames then
+		for _, frame in pairs(self.testFrames) do
+			applyTex(frame)
+		end
+	end
+	if self.testPetFrames then
+		for _, frame in pairs(self.testPetFrames) do
+			applyTex(frame)
+		end
+	end
+end
+
 function sRaidFrames:LibSharedMedia_SetGlobal(mediatype, handle)
 	if mediatype == "statusbar" then
-		local texture = Media:Fetch("statusbar", handle)
-		for _, frame in pairs(self.frames) do
-			frame.hpbar:SetStatusBarTexture(texture)
-			frame.mpbar:SetStatusBarTexture(texture)
-			if frame.healbar then frame.healbar:SetStatusBarTexture(texture) end
-			if frame.petframe then
-				if frame.petframe.hpbar then frame.petframe.hpbar:SetStatusBarTexture(texture) end
-				if frame.petframe.healbar then frame.petframe.healbar:SetStatusBarTexture(texture) end
-			end
-		end
+		self:SetAllStatusBarTexture(Media:Fetch("statusbar", handle))
 	end
 end
 
@@ -1433,6 +1471,10 @@ function sRaidFrames:UpdateRoster()
 	local shouldBeActive = inRaid or (self.opt.ShowInParty and inGroup)
 	local inArena = select(2, IsInInstance()) == "arena"
 
+	if shouldBeActive and self.testMode and self.testMode ~= "off" and self.ExitTestMode then
+		self:ExitTestMode(false)
+	end
+
 	if not sRaidFrames.enabled then
 		if shouldBeActive and not (sRaidFrames.opt.HideInArena and inArena) and sRaidFrames.opt.Show then
 			sRaidFrames:EnableFrames()
@@ -1495,16 +1537,23 @@ function sRaidFrames:PetToOwnerUnit(unit)
 	return nil
 end
 
+function sRaidFrames:IsEffectiveInRaid()
+	if self.testMode and self.testMode ~= "off" then
+		return self.testMode ~= "party"
+	end
+	return IsInRaid()
+end
+
 function sRaidFrames:GetCurrentPetMode()
 	if not self.opt then return "attached" end
-	if IsInRaid() then
+	if self:IsEffectiveInRaid() then
 		return self.opt.RaidPetMode or "attached"
 	end
 	return self.opt.PartyPetMode or "attached"
 end
 
 function sRaidFrames:GetPartyPetSpacingReserve()
-	if (not IsInRaid()) and self:GetCurrentPetMode() == "attached" then
+	if (not self:IsEffectiveInRaid()) and self:GetCurrentPetMode() == "attached" then
 		return 24
 	end
 	return 0
@@ -1529,12 +1578,15 @@ function sRaidFrames:OnUnitPet(event, ownerUnit)
 end
 
 function sRaidFrames:ShouldShowPortrait()
-	return self.opt and self.opt.ShowPartyPortrait and not IsInRaid()
+	return self.opt and self.opt.ShowPartyPortrait and not self:IsEffectiveInRaid()
 end
 
 function sRaidFrames:UpdateAllUnits()
 	for unit in pairs(self:GetAllUnits()) do
 		self:UpdateAll(unit)
+	end
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
 	end
 end
 
@@ -1571,22 +1623,35 @@ function sRaidFrames:UpdateHealsOnUnit(event, unit)
 			end
 		end
 	end
-	if not self:IsTracking(unit) then return end
-	local actualUnit = self:GetVehicleUnit(unit)
-	local hpmax = UnitHealthMax(actualUnit)
-	for _, f in pairs(self:FindUnitFrames(unit)) do
-		self:UpdateUnitHealPredictionBar(f, actualUnit, hpmax)
+	local u = self:GetNonVehicleUnit(unit)
+	if not self:IsTracking(u) then return end
+	local actualUnit = self:GetVehicleUnit(u)
+	local okHM, hpmax = pcall(UnitHealthMax, actualUnit)
+	for _, f in pairs(self:FindUnitFrames(u)) do
+		self:UpdateUnitHealPredictionBar(f, actualUnit, okHM and hpmax or nil)
+		self:UpdateUnitAbsorbBar(f, actualUnit, okHM and hpmax or nil)
 	end
 
-	local ok, incomingHeals = pcall(UnitGetIncomingHeals, unit)
+	local ok, incomingHeals = pcall(UnitGetIncomingHeals, actualUnit)
 	if not ok or IsSecret(incomingHeals) or not incomingHeals then
 		incomingHeals = 0
 	end
 
 	if self.opt.HighlightHeals and incomingHeals > 0 then
-		self:SetStatus(unit, "Heal", ("+%d"):format(incomingHeals), nil, true)
+		self:SetStatus(u, "Heal", ("+%d"):format(incomingHeals), nil, true)
 	else
-		self:UnsetStatus(unit, "Heal")
+		self:UnsetStatus(u, "Heal")
+	end
+end
+
+function sRaidFrames:UpdateAbsorbsOnUnit(event, unit)
+	if not unit or IsSecret(unit) then return end
+	local u = self:GetNonVehicleUnit(unit)
+	if not self:IsTracking(u) then return end
+	local actualUnit = self:GetVehicleUnit(u)
+	local okM, hpmax = pcall(UnitHealthMax, actualUnit)
+	for _, f in pairs(self:FindUnitFrames(u)) do
+		self:UpdateUnitAbsorbBar(f, actualUnit, okM and hpmax or nil)
 	end
 end
 
@@ -1633,6 +1698,10 @@ end
 
 function sRaidFrames:READY_CHECK(event, author)
 	if not self.opt.ReadyCheck then return end
+	if self.readyCheckTimer then
+		self:CancelTimer(self.readyCheckTimer, true)
+		self.readyCheckTimer = nil
+	end
 
 	local authorid = self:GetUnitByName(author)
 
@@ -1659,8 +1728,12 @@ end
 
 function sRaidFrames:READY_CHECK_FINISHED()
 	if not self.opt.ReadyCheck then return end
+	if self.readyCheckTimer then
+		self:CancelTimer(self.readyCheckTimer, true)
+	end
 
-	self:ScheduleTimer(function()
+	self.readyCheckTimer = self:ScheduleTimer(function()
+		self.readyCheckTimer = nil
 		for unitid in pairs(self:GetAllUnits()) do
 			self:UnsetStatus(unitid, "ReadyCheck_Pending")
 			self:UnsetStatus(unitid, "ReadyCheck_Ready")
@@ -1978,6 +2051,9 @@ local function UpdateUnitPortrait(f, unit)
 	if okR and type(raceFile) == "string" and not IsSecret(raceFile) and raceFile ~= "" then
 		f.portrait:SetTexture("Interface\\CharacterFrame\\TemporaryPortrait-" .. sexStr .. "-" .. raceFile)
 		f.portrait:SetTexCoord(0, 1, 0, 1)
+	elseif sRaidFrames:IsPetUnit(unit) then
+		f.portrait:SetTexture("Interface\\Icons\\Ability_Hunter_BeastCall")
+		f.portrait:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 	else
 		pcall(SetPortraitTexture, f.portrait, unit)
 	end
@@ -2218,6 +2294,16 @@ function sRaidFrames:GetUnitMissingHealth(unit)
 end
 
 local incomingHealCalc
+local function GetIncomingHealCalc()
+	if incomingHealCalc == nil then
+		incomingHealCalc = _G.CreateUnitHealPredictionCalculator and _G.CreateUnitHealPredictionCalculator() or false
+		if incomingHealCalc and _G.Enum and _G.Enum.UnitIncomingHealClampMode and incomingHealCalc.SetIncomingHealClampMode then
+			pcall(incomingHealCalc.SetIncomingHealClampMode, incomingHealCalc, _G.Enum.UnitIncomingHealClampMode.MissingHealth)
+		end
+	end
+	return incomingHealCalc
+end
+
 function sRaidFrames:UpdateUnitHealPredictionBar(f, unit, hpmax)
 	if not f or not f.healbar then return end
 	if not self.opt.ShowHealPrediction or not unit or IsSecret(unit) then
@@ -2229,19 +2315,14 @@ function sRaidFrames:UpdateUnitHealPredictionBar(f, unit, hpmax)
 		f.healbar:Hide()
 		return
 	end
-	if incomingHealCalc == nil then
-		incomingHealCalc = _G.CreateUnitHealPredictionCalculator and _G.CreateUnitHealPredictionCalculator() or false
-		if incomingHealCalc and _G.Enum and _G.Enum.UnitIncomingHealClampMode and incomingHealCalc.SetIncomingHealClampMode then
-			pcall(incomingHealCalc.SetIncomingHealClampMode, incomingHealCalc, _G.Enum.UnitIncomingHealClampMode.MissingHealth)
-		end
-	end
+	local calc = GetIncomingHealCalc()
 
 	local inc = nil
-	if incomingHealCalc and incomingHealCalc.GetIncomingHeals and _G.UnitGetDetailedHealPrediction then
-		local ok = pcall(incomingHealCalc.ResetPredictedValues, incomingHealCalc)
-		ok = ok and pcall(_G.UnitGetDetailedHealPrediction, unit, "player", incomingHealCalc)
+	if calc and calc.GetIncomingHeals and _G.UnitGetDetailedHealPrediction then
+		local ok = pcall(calc.ResetPredictedValues, calc)
+		ok = ok and pcall(_G.UnitGetDetailedHealPrediction, unit, "player", calc)
 		if ok then
-			local okI, val = pcall(incomingHealCalc.GetIncomingHeals, incomingHealCalc)
+			local okI, val = pcall(calc.GetIncomingHeals, calc)
 			if okI then inc = val end
 		end
 	elseif _G.UnitGetIncomingHeals then
@@ -2281,7 +2362,59 @@ function sRaidFrames:UpdateUnitHealPredictionBar(f, unit, hpmax)
 	f.healbar:Show()
 end
 
-local hpcache = {}
+function sRaidFrames:UpdateUnitAbsorbBar(f, unit, hpmax)
+	if not f or not f.absorbbar then return end
+	if not self.opt.ShowAbsorbBar or not unit or IsSecret(unit) then
+		f.absorbbar:Hide()
+		return
+	end
+	local dead, ghost = self:IsUnitReallyDead(unit)
+	if dead or ghost then
+		f.absorbbar:Hide()
+		return
+	end
+	local calc = GetIncomingHealCalc()
+
+	local absorb = nil
+	if calc and calc.GetTotalDamageAbsorbs and _G.UnitGetDetailedHealPrediction then
+		local ok = pcall(calc.ResetPredictedValues, calc)
+		ok = ok and pcall(_G.UnitGetDetailedHealPrediction, unit, "player", calc)
+		if ok then
+			local okA, val = pcall(calc.GetTotalDamageAbsorbs, calc)
+			if okA then absorb = val end
+		end
+	end
+	if absorb == nil and _G.UnitGetTotalAbsorbs then
+		local okA, val = pcall(_G.UnitGetTotalAbsorbs, unit)
+		if okA then absorb = val end
+	end
+
+	if absorb == nil then
+		f.absorbbar:Hide()
+		return
+	end
+	hpmax = hpmax or UnitHealthMax(unit)
+	if not IsSecret(absorb) and absorb <= 0 then
+		f.absorbbar:Hide()
+		return
+	end
+	if not IsSecret(hpmax) and (not hpmax or hpmax <= 0) then
+		f.absorbbar:Hide()
+		return
+	end
+	if not IsSecret(absorb) and not IsSecret(hpmax) and absorb > hpmax then
+		absorb = hpmax
+	end
+
+	local invert = (not f.ownerFrame) and self.opt and self.opt.Invert and true or false
+	if f.absorbbar.SetReverseFill then
+		f.absorbbar:SetReverseFill(invert)
+	end
+	pcall(f.absorbbar.SetMinMaxValues, f.absorbbar, 0, hpmax)
+	pcall(f.absorbbar.SetValue, f.absorbbar, absorb)
+	f.absorbbar:Show()
+end
+
 local freqElapsed = 0
 function sRaidFrames:FrequentHealthUpdate(elapsed)
 	if elapsed then
@@ -2298,6 +2431,7 @@ function sRaidFrames:FrequentHealthUpdate(elapsed)
 
 			if IsSecret(hp) or IsSecret(hpmax) then
 				hpcache[munit] = nil
+				hpmaxcache[munit] = nil
 				for _, f in pairs(self:FindUnitFrames(munit)) do
 					self:UpdateSingleUnitHealth(f, hp, hpmax, nil, unit)
 				end
@@ -2305,8 +2439,9 @@ function sRaidFrames:FrequentHealthUpdate(elapsed)
 				hp = hp or 0
 				hpmax = hpmax or 0
 				local hpp = (hpmax ~= 0) and ceil((hp / hpmax) * 100) or 0
-				if hpcache[munit] ~= hp then
+				if hpcache[munit] ~= hp or hpmaxcache[munit] ~= hpmax then
 					hpcache[munit] = hp
+					hpmaxcache[munit] = hpmax
 					for _, f in pairs(self:FindUnitFrames(munit)) do
 						self:UpdateSingleUnitHealth(f, hp, hpmax, hpp, unit)
 					end
@@ -2361,6 +2496,7 @@ function sRaidFrames:UpdateSingleUnitHealth(f, hp, hpmax, hpp, unit)
 		pcall(f.hpbar.SetMinMaxValues, f.hpbar, 0, hpmax)
 		pcall(f.hpbar.SetValue, f.hpbar, hp)
 		self:UpdateUnitHealPredictionBar(f, unit, hpmax)
+		self:UpdateUnitAbsorbBar(f, unit, hpmax)
 
 		if not self.opt.HealthBarColorByClass then
 			local curve = self:GetHealthColorCurve()
@@ -2465,6 +2601,7 @@ function sRaidFrames:UpdateSingleUnitHealth(f, hp, hpmax, hpp, unit)
 		f.hpbar:SetStatusBarColor(self:GetHPSeverity(hpp / 100))
 	end
 	self:UpdateUnitHealPredictionBar(f, unit, hpmax)
+	self:UpdateUnitAbsorbBar(f, unit, hpmax)
 end
 
 function sRaidFrames:IsUnitReallyDead(unit)
@@ -2472,19 +2609,40 @@ function sRaidFrames:IsUnitReallyDead(unit)
 	if not okD or IsSecret(dead) then dead = false end
 	local okG, ghost = pcall(UnitIsGhost, unit)
 	if not okG or IsSecret(ghost) then ghost = false end
-	if dead and _G.UnitIsFeignDeath then
+	local feigning = false
+	if _G.UnitIsFeignDeath then
 		local okF, feign = pcall(_G.UnitIsFeignDeath, unit)
 		if okF and not IsSecret(feign) and feign then
+			feigning = true
 			dead = false
 		end
 	end
-	return dead, ghost
+	return dead, ghost, feigning
+end
+
+function sRaidFrames:SyncFeignDeathStatus(munit, unit, feigning)
+	if feigning == nil then
+		feigning = select(3, self:IsUnitReallyDead(unit or self:GetVehicleUnit(munit)))
+	end
+	local map = self.opt.StatusMaps["Buff_5384"]
+	local playerAllowed = true
+	if map and map.options and map.options.playerOnly then
+		local okU, isMe = pcall(UnitIsUnit, unit or munit, "player")
+		playerAllowed = (okU and not IsSecret(isMe) and isMe) and true or false
+	end
+	local classAllowed = not self.opt.classspelltable[5384]["IsFiltered"] or self.opt.classspelltable[5384][self.PlayerClass]
+	if feigning and playerAllowed and classAllowed then
+		self:SetStatus(munit, "Buff_5384")
+	else
+		self:UnsetStatus(munit, "Buff_5384")
+	end
 end
 
 function sRaidFrames:UpdateUnitHealth(munit)
 	if not self:IsTracking(munit) then return end
 	local unit = self:GetVehicleUnit(munit)
-	local dead, ghost = self:IsUnitReallyDead(unit)
+	local dead, ghost, feigning = self:IsUnitReallyDead(unit)
+	self:SyncFeignDeathStatus(munit, unit, feigning)
 	local okConn, connected = pcall(UnitIsConnected, munit)
 	local isOffline = (okConn and not IsSecret(connected) and connected == false)
 
@@ -2504,6 +2662,7 @@ function sRaidFrames:UpdateUnitHealth(munit)
 			f.hpbar:SetMinMaxValues(0, 100)
 			f.hpbar:SetValue(0)
 			if f.healbar then f.healbar:Hide() end
+			if f.absorbbar then f.absorbbar:Hide() end
 			f.mpbar:SetMinMaxValues(0, 100)
 			f.mpbar:SetValue(0)
 			self:SetStatus(munit, "Death")
@@ -3145,6 +3304,8 @@ local function SetAuraButtonCooldown(btn, unit, duration, expirationTime, auraIn
 	end
 end
 
+local RAID_TARGETS = {"Raid Icon: Star", "Raid Icon: Circle", "Raid Icon: Diamond", "Raid Icon: Triangle", "Raid Icon: Moon", "Raid Icon: Square", "Raid Icon: Cross", "Raid Icon: Skull"}
+
 function sRaidFrames:UpdateAuras(munit)
 	if not self:IsTracking(munit) then return end
 	local layout = self:GetLayout()
@@ -3348,26 +3509,29 @@ function sRaidFrames:UpdateAuras(munit)
 		end
 
 		for _, id in pairs(self.statusSpellByID) do
-			if foundStatusBuffs[id] == nil then
+			if id ~= 5384 and foundStatusBuffs[id] == nil then
 				self:UnsetStatus(munit, "Buff_" .. id)
 			end
 		end
 		for statusId, isMine in pairs(foundStatusBuffs) do
-			local status = "Buff_" .. statusId
-			local map = self.opt.StatusMaps[status]
-			if map then
-				local playerAllowed = not (map.options and map.options.playerOnly and not isMine)
-				local classAllowed = not self.opt.classspelltable[statusId]["IsFiltered"] or self.opt.classspelltable[statusId][self.PlayerClass]
-				if playerAllowed and classAllowed then
-					self:SetStatus(munit, status)
+			if statusId ~= 5384 then
+				local status = "Buff_" .. statusId
+				local map = self.opt.StatusMaps[status]
+				if map then
+					local playerAllowed = not (map.options and map.options.playerOnly and not isMine)
+					local classAllowed = not self.opt.classspelltable[statusId]["IsFiltered"] or self.opt.classspelltable[statusId][self.PlayerClass]
+					if playerAllowed and classAllowed then
+						self:SetStatus(munit, status)
+					else
+						self:UnsetStatus(munit, status)
+					end
 				else
 					self:UnsetStatus(munit, status)
 				end
-			else
-				self:UnsetStatus(munit, status)
 			end
 		end
 	end
+	self:SyncFeignDeathStatus(munit, unit, nil)
 
 	if #chosenBuffs > 1 then
 		tsort(chosenBuffs, function(a, b)
@@ -3382,18 +3546,17 @@ function sRaidFrames:UpdateAuras(munit)
 		okRT, raidtarget = pcall(GetRaidTargetIndex, unit)
 		if not okRT then raidtarget = nil end
 	end
-	local raidtargets = {"Raid Icon: Star", "Raid Icon: Circle", "Raid Icon: Diamond", "Raid Icon: Triangle", "Raid Icon: Moon", "Raid Icon: Square", "Raid Icon: Cross", "Raid Icon: Skull"}
 	if raidtarget ~= nil and not IsSecret(raidtarget) then
-		for i = 1, #raidtargets do
+		for i = 1, #RAID_TARGETS do
 			if i ~= raidtarget then
-				self:UnsetStatus(munit, raidtargets[i])
+				self:UnsetStatus(munit, RAID_TARGETS[i])
 			else
-				self:SetStatus(munit, raidtargets[i])
+				self:SetStatus(munit, RAID_TARGETS[i])
 			end
 		end
 	elseif raidtarget == nil then
-		for i = 1, #raidtargets do
-			self:UnsetStatus(munit, raidtargets[i])
+		for i = 1, #RAID_TARGETS do
+			self:UnsetStatus(munit, RAID_TARGETS[i])
 		end
 	end
 
@@ -3545,6 +3708,9 @@ function sRaidFrames:RefreshAllNativeAuraContainers()
 			end
 		end
 		self:UpdateAuras(unit)
+	end
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
 	end
 end
 
@@ -3739,9 +3905,7 @@ function sRaidFrames:UnitTooltip(frame)
 end
 
 privateFuncs.IsInCombat = function()
-	local okP, pCombat = pcall(UnitAffectingCombat, "player")
-	if not okP or IsSecret(pCombat) then pCombat = false end
-	return (sRaidFrames.InCombat or InCombatLockdown() or pCombat)
+	return (sRaidFrames.InCombat or InCombatLockdown())
 end
 
 privateFuncs.LGIST_to_RoleSpec = function(unit, eclass)
@@ -3792,6 +3956,8 @@ end
 
 function sRaidFrames:UpdateFrameCache()
 	self.FramesByUnit = {}
+	wipe(hpcache)
+	wipe(hpmaxcache)
 	for k, frame in pairs(self.frames) do
 		local unit = frame:GetAttribute("unit")
 		if unit then
@@ -3891,12 +4057,227 @@ local function CreateStyledAuraIconButton(parent, onEnter, onLeave, defaultFontS
 	return btn
 end
 
+function sRaidFrames:InitUnitFrameVisuals(f, isTest)
+	local vf = f._visualFrame or f
+	local layout = self:GetLayout()
+
+	f.title = vf:CreateFontString(nil, "ARTWORK")
+	f.title:SetFontObject(GameFontNormalSmall)
+	f.title:SetJustifyH("LEFT")
+	if f.title.SetWordWrap then f.title:SetWordWrap(false) end
+
+	local fontPath = (GameFontNormal and GameFontNormal:GetFont()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+	local dEnter = not isTest and DebuffFrame_OnEnter or nil
+	local dLeave = not isTest and DebuffFrame_OnLeave or nil
+	local bEnter = not isTest and BuffFrame_OnEnter or nil
+	local bLeave = not isTest and BuffFrame_OnLeave or nil
+
+	for i = 1, layout.debuffCount do
+		local debuffFrame = CreateStyledAuraIconButton(vf, dEnter, dLeave, 11)
+		local debuffTimer = debuffFrame.timer
+		if not isTest then
+			debuffFrame:SetScript("OnUpdate", function(btn, elapsed)
+				btn._elapsed = (btn._elapsed or 0) + (elapsed or 0)
+				if btn._elapsed < 0.1 then return end
+				btn._elapsed = 0
+				local expires = debuffTimer.expires
+				if not expires then
+					if debuffTimer.cache then
+						debuffTimer:SetText(nil)
+						debuffTimer.cache = nil
+					end
+					return
+				end
+				local seconds = floor(expires - GetTime())
+				if seconds >= 0 and sRaidFrames.opt.debufftimer.show and (seconds <= sRaidFrames.opt.debufftimer.max) then
+					local sStr = tostring(seconds)
+					if debuffTimer.cache ~= sStr then
+						debuffTimer:SetText(sStr)
+						debuffTimer.cache = sStr
+					end
+					local supposedsize = seconds >= 10 and 9 or 11
+					if supposedsize ~= debuffTimer.fontsize then
+						debuffTimer:SetFont(fontPath, supposedsize, "OUTLINE")
+						debuffTimer.fontsize = supposedsize
+					end
+				elseif debuffTimer.cache then
+					debuffTimer:SetText(nil)
+					debuffTimer.cache = nil
+				end
+			end)
+		end
+		f["aura"..i] = debuffFrame
+	end
+
+	for i = 1, layout.buffCount do
+		local buffFrame = CreateStyledAuraIconButton(vf, bEnter, bLeave, 9)
+		local buffTimer = buffFrame.timer
+		if not isTest then
+			buffFrame:SetScript("OnUpdate", function(btn, elapsed)
+				btn._elapsed = (btn._elapsed or 0) + (elapsed or 0)
+				if btn._elapsed < 0.1 then return end
+				btn._elapsed = 0
+				local expires = buffTimer.expires
+				if not expires then
+					if buffTimer.cache then
+						buffTimer:SetText(nil)
+						buffTimer.cache = nil
+					end
+					return
+				end
+				local seconds = floor(expires - GetTime())
+				if seconds >= 0 and sRaidFrames.opt.bufftimer.show and (seconds <= sRaidFrames.opt.bufftimer.max) then
+					local sStr = tostring(seconds)
+					if buffTimer.cache ~= sStr then
+						buffTimer:SetText(sStr)
+						buffTimer.cache = sStr
+					end
+					local supposedsize = seconds >= 10 and 7 or 9
+					if supposedsize ~= buffTimer.fontsize then
+						buffTimer:SetFont(fontPath, supposedsize, "OUTLINE")
+						buffTimer.fontsize = supposedsize
+					end
+				elseif buffTimer.cache then
+					buffTimer:SetText(nil)
+					buffTimer.cache = nil
+				end
+			end)
+		end
+		f["buff"..i] = buffFrame
+	end
+
+	local texture = Media:Fetch("statusbar", self.opt.Texture)
+
+	f.hpbar = CreateFrame("StatusBar", nil, vf)
+	f.hpbar:SetStatusBarTexture(texture)
+	f.hpbar:SetMinMaxValues(0, 100)
+	f.hpbar:SetValue(0)
+	pcall(f.hpbar.SetClipsChildren, f.hpbar, true)
+	f.hpbar.bg = f.hpbar:CreateTexture(nil, "BACKGROUND")
+	f.hpbar.bg:SetAllPoints(f.hpbar)
+	f.hpbar.bg:SetColorTexture(0.08, 0.10, 0.14, 0.85)
+
+	f.healbar = CreateFrame("StatusBar", nil, f.hpbar)
+	f.healbar:SetStatusBarTexture(texture)
+	f.healbar:SetStatusBarColor(0.32, 0.72, 0.42, 0.78)
+	f.healbar:SetMinMaxValues(0, 100)
+	f.healbar:SetValue(0)
+	f.healbar:SetPoint("TOPLEFT", f.hpbar:GetStatusBarTexture(), "TOPRIGHT", 0, 0)
+	f.healbar:SetPoint("BOTTOMLEFT", f.hpbar:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
+	f.healbar:SetFrameLevel(f.hpbar:GetFrameLevel())
+	f.healbar:Hide()
+
+	-- Top 3px absorb shield thin bar along top edge of hpbar
+	f.absorbbar = CreateFrame("StatusBar", nil, f.hpbar)
+	f.absorbbar:SetStatusBarTexture(texture)
+	f.absorbbar:SetStatusBarColor(0.72, 0.92, 1.0, 0.95)
+	f.absorbbar:SetMinMaxValues(0, 100)
+	f.absorbbar:SetValue(0)
+	f.absorbbar:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 0, 0)
+	f.absorbbar:SetPoint("TOPRIGHT", f.hpbar, "TOPRIGHT", 0, 0)
+	f.absorbbar:SetHeight(3)
+	f.absorbbar:SetFrameLevel(f.hpbar:GetFrameLevel() + 2)
+	f.absorbbar:Hide()
+
+	f.hpbar.text = f.hpbar:CreateFontString(nil, "ARTWORK")
+	f.hpbar.text:SetFontObject(GameFontHighlightSmall)
+	f.hpbar.text:SetJustifyH("CENTER")
+
+	local color = self.opt.HealthTextColor
+	f.hpbar.text:SetTextColor(color.r, color.g, color.b, color.a)
+
+	f.mpbar = CreateFrame("StatusBar", nil, vf)
+	f.mpbar:SetStatusBarTexture(texture)
+	f.mpbar:SetMinMaxValues(0, 100)
+	f.mpbar:SetValue(0)
+	f.mpbar.bg = f.mpbar:CreateTexture(nil, "BACKGROUND")
+	f.mpbar.bg:SetAllPoints(f.mpbar)
+	f.mpbar.bg:SetColorTexture(0.06, 0.08, 0.12, 0.85)
+
+	f.statustext = f.mpbar:CreateFontString(nil, "ARTWORK")
+	f.statustext:SetFontObject(GameFontHighlightSmall)
+	f.statustext:SetJustifyH("CENTER")
+
+	local dbmIcon = CreateStyledAuraIconButton(vf, nil, nil, 10)
+	dbmIcon:SetFrameLevel(f.hpbar:GetFrameLevel() + 8)
+	dbmIcon:SetSize(14, 14)
+	dbmIcon:SetPoint("RIGHT", f.hpbar, "RIGHT", -1, 0)
+	SetAuraButtonBorder(dbmIcon, 1.0, 0.2, 0.0, 1.0)
+	f.dbmAlertIcon = dbmIcon
+
+	local markerHolder = CreateFrame("Frame", nil, vf)
+	markerHolder:SetAllPoints(f.hpbar)
+	markerHolder:SetFrameLevel(f.hpbar:GetFrameLevel() + 7)
+	local raidMarker = markerHolder:CreateTexture(nil, "OVERLAY")
+	raidMarker:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+	raidMarker:SetSize(11, 11)
+	raidMarker:SetPoint("LEFT", f.hpbar, "LEFT", 1, 0)
+	raidMarker:Hide()
+	f.raidMarker = raidMarker
+
+	local classIcon = markerHolder:CreateTexture(nil, "OVERLAY")
+	classIcon:SetSize(11, 11)
+	classIcon:SetPoint("LEFT", f.hpbar, "RIGHT", 2, 0)
+	classIcon:Hide()
+	f.classIcon = classIcon
+
+	local levelText = markerHolder:CreateFontString(nil, "OVERLAY")
+	levelText:SetFontObject(GameFontNormalSmall)
+	levelText:SetJustifyH("LEFT")
+	levelText:SetTextColor(1, 0.85, 0.25, 1)
+	levelText:SetPoint("LEFT", classIcon, "RIGHT", 2, 0)
+	levelText:Hide()
+	f.levelText = levelText
+
+	local tankIcon = markerHolder:CreateTexture(nil, "OVERLAY")
+	tankIcon:SetSize(11, 11)
+	tankIcon:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 1, 0)
+	tankIcon:Hide()
+	f.tankIcon = tankIcon
+
+	local leaderIcon = markerHolder:CreateTexture(nil, "OVERLAY")
+	leaderIcon:SetSize(11, 11)
+	leaderIcon:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 1, 0)
+	leaderIcon:Hide()
+	f.leaderIcon = leaderIcon
+
+	local portraitFrame = CreateFrame("Frame", nil, vf)
+	portraitFrame:SetSize(30, 30)
+	portraitFrame:SetPoint("LEFT", f, "LEFT", 4, 0)
+	portraitFrame:Hide()
+	local portraitBg = portraitFrame:CreateTexture(nil, "BACKGROUND")
+	portraitBg:SetAllPoints(portraitFrame)
+	portraitBg:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
+	portraitBg:SetVertexColor(0.06, 0.08, 0.12, 0.92)
+	local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
+	portrait:SetAllPoints(portraitFrame)
+	if portraitFrame.CreateMaskTexture then
+		local mask = portraitFrame:CreateMaskTexture()
+		mask:SetAllPoints(portrait)
+		mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+		portrait:AddMaskTexture(mask)
+	end
+	local portraitBorder = portraitFrame:CreateTexture(nil, "OVERLAY")
+	portraitBorder:SetPoint("CENTER", portraitFrame, "CENTER", 0, 0)
+	portraitBorder:SetSize(42, 42)
+	portraitBorder:SetTexture("Interface\\CharacterFrame\\TotemBorder")
+	portraitBorder:SetVertexColor(0.85, 0.78, 0.62, 0.95)
+	f.portraitFrame = portraitFrame
+	f.portrait = portrait
+	f.portraitBorder = portraitBorder
+
+	local voiceIcon = markerHolder:CreateTexture(nil, "OVERLAY")
+	voiceIcon:SetSize(13, 13)
+	voiceIcon:SetPoint("BOTTOMLEFT", portraitFrame, "BOTTOMLEFT", -2, -2)
+	voiceIcon:Hide()
+	f.voiceIcon = voiceIcon
+end
+
 function sRaidFrames.CreateChildFrame(header, name)
 	local self = sRaidFrames
 	local f = _G[name]
 
 	Compat.AttachSafeUnitBackdrop(f)
-	local vf = f._visualFrame or f
 
 	local layout = self:GetLayout()
 
@@ -3930,205 +4311,7 @@ function sRaidFrames.CreateChildFrame(header, name)
 	f:HookScript("OnLeave", UnitFrame_OnLeave)
 	f:HookScript("OnAttributeChanged", sRaidFrames_OnAttributeChanged)
 
-	f.title = vf:CreateFontString(nil, "ARTWORK")
-	f.title:SetFontObject(GameFontNormalSmall)
-	f.title:SetJustifyH("LEFT")
-	if f.title.SetWordWrap then f.title:SetWordWrap(false) end
-
-	local fontPath = (GameFontNormal and GameFontNormal:GetFont()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-
-	for i = 1, layout.debuffCount do
-		local debuffFrame = CreateStyledAuraIconButton(vf, DebuffFrame_OnEnter, DebuffFrame_OnLeave, 11)
-		local debuffTimer = debuffFrame.timer
-		debuffFrame:SetScript("OnUpdate", function(btn, elapsed)
-			btn._elapsed = (btn._elapsed or 0) + (elapsed or 0)
-			if btn._elapsed < 0.1 then return end
-			btn._elapsed = 0
-			local expires = debuffTimer.expires
-			if not expires then
-				if debuffTimer.cache then
-					debuffTimer:SetText(nil)
-					debuffTimer.cache = nil
-				end
-				return
-			end
-			local seconds = floor(expires - GetTime())
-			if seconds >= 0 and sRaidFrames.opt.debufftimer.show and (seconds <= sRaidFrames.opt.debufftimer.max) then
-				local sStr = tostring(seconds)
-				if debuffTimer.cache ~= sStr then
-					debuffTimer:SetText(sStr)
-					debuffTimer.cache = sStr
-				end
-				local supposedsize = seconds >= 10 and 9 or 11
-				if supposedsize ~= debuffTimer.fontsize then
-					debuffTimer:SetFont(fontPath, supposedsize, "OUTLINE")
-					debuffTimer.fontsize = supposedsize
-				end
-			elseif debuffTimer.cache then
-				debuffTimer:SetText(nil)
-				debuffTimer.cache = nil
-			end
-		end)
-		f["aura"..i] = debuffFrame
-	end
-
-	for i = 1, layout.buffCount do
-		local buffFrame = CreateStyledAuraIconButton(vf, BuffFrame_OnEnter, BuffFrame_OnLeave, 9)
-		local buffTimer = buffFrame.timer
-		buffFrame:SetScript("OnUpdate", function(btn, elapsed)
-			btn._elapsed = (btn._elapsed or 0) + (elapsed or 0)
-			if btn._elapsed < 0.1 then return end
-			btn._elapsed = 0
-			local expires = buffTimer.expires
-			if not expires then
-				if buffTimer.cache then
-					buffTimer:SetText(nil)
-					buffTimer.cache = nil
-				end
-				return
-			end
-			local seconds = floor(expires - GetTime())
-			if seconds >= 0 and sRaidFrames.opt.bufftimer.show and (seconds <= sRaidFrames.opt.bufftimer.max) then
-				local sStr = tostring(seconds)
-				if buffTimer.cache ~= sStr then
-					buffTimer:SetText(sStr)
-					buffTimer.cache = sStr
-				end
-				local supposedsize = seconds >= 10 and 7 or 9
-				if supposedsize ~= buffTimer.fontsize then
-					buffTimer:SetFont(fontPath, supposedsize, "OUTLINE")
-					buffTimer.fontsize = supposedsize
-				end
-			elseif buffTimer.cache then
-				buffTimer:SetText(nil)
-				buffTimer.cache = nil
-			end
-		end)
-		f["buff"..i] = buffFrame
-	end
-
-	local texture = Media:Fetch("statusbar", self.opt.Texture)
-
-	f.hpbar = CreateFrame("StatusBar", nil, vf)
-	f.hpbar:SetStatusBarTexture(texture)
-	f.hpbar:SetMinMaxValues(0, 100)
-	f.hpbar:SetValue(0)
-	pcall(f.hpbar.SetClipsChildren, f.hpbar, true)
-	f.hpbar.bg = f.hpbar:CreateTexture(nil, "BACKGROUND")
-	f.hpbar.bg:SetAllPoints(f.hpbar)
-	f.hpbar.bg:SetColorTexture(0.08, 0.10, 0.14, 0.85)
-
-	-- Incoming heal prediction bar (parented & clipped to hpbar so it never overflows onto aura icons)
-	f.healbar = CreateFrame("StatusBar", nil, f.hpbar)
-	f.healbar:SetStatusBarTexture(texture)
-	f.healbar:SetStatusBarColor(0.32, 0.72, 0.42, 0.78)
-	f.healbar:SetMinMaxValues(0, 100)
-	f.healbar:SetValue(0)
-	f.healbar:SetPoint("TOPLEFT", f.hpbar:GetStatusBarTexture(), "TOPRIGHT", 0, 0)
-	f.healbar:SetPoint("BOTTOMLEFT", f.hpbar:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
-	f.healbar:SetFrameLevel(f.hpbar:GetFrameLevel())
-	f.healbar:Hide()
-
-	f.hpbar.text = f.hpbar:CreateFontString(nil, "ARTWORK")
-	f.hpbar.text:SetFontObject(GameFontHighlightSmall)
-	f.hpbar.text:SetJustifyH("CENTER")
-
-	local color = self.opt.HealthTextColor
-	f.hpbar.text:SetTextColor(color.r, color.g, color.b, color.a)
-
-	f.mpbar = CreateFrame("StatusBar", nil, vf)
-	f.mpbar:SetStatusBarTexture(texture)
-	f.mpbar:SetMinMaxValues(0, 100)
-	f.mpbar:SetValue(0)
-	f.mpbar.bg = f.mpbar:CreateTexture(nil, "BACKGROUND")
-	f.mpbar.bg:SetAllPoints(f.mpbar)
-	f.mpbar.bg:SetColorTexture(0.06, 0.08, 0.12, 0.85)
-
-	f.statustext = f.mpbar:CreateFontString(nil, "ARTWORK")
-	f.statustext:SetFontObject(GameFontHighlightSmall)
-	f.statustext:SetJustifyH("CENTER")
-
-	-- DBM / Boss Alert Overlay Icon (anchored on the right of the health bar so it's always visible)
-	local dbmIcon = CreateStyledAuraIconButton(vf, nil, nil, 10)
-	dbmIcon:SetFrameLevel(f.hpbar:GetFrameLevel() + 8)
-	dbmIcon:SetSize(14, 14)
-	dbmIcon:SetPoint("RIGHT", f.hpbar, "RIGHT", -1, 0)
-	SetAuraButtonBorder(dbmIcon, 1.0, 0.2, 0.0, 1.0)
-	f.dbmAlertIcon = dbmIcon
-
-	-- Raid Target Marker Texture (anchored on the left of the health bar)
-	local markerHolder = CreateFrame("Frame", nil, vf)
-	markerHolder:SetAllPoints(f.hpbar)
-	markerHolder:SetFrameLevel(f.hpbar:GetFrameLevel() + 7)
-	local raidMarker = markerHolder:CreateTexture(nil, "OVERLAY")
-	raidMarker:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
-	raidMarker:SetSize(11, 11)
-	raidMarker:SetPoint("LEFT", f.hpbar, "LEFT", 1, 0)
-	raidMarker:Hide()
-	f.raidMarker = raidMarker
-
-	-- Small Class Icon beside the right side of the health bar
-	local classIcon = markerHolder:CreateTexture(nil, "OVERLAY")
-	classIcon:SetSize(11, 11)
-	classIcon:SetPoint("LEFT", f.hpbar, "RIGHT", 2, 0)
-	classIcon:Hide()
-	f.classIcon = classIcon
-
-	-- Player Level Text to the right of Class Icon (5-player Party mode only)
-	local levelText = markerHolder:CreateFontString(nil, "OVERLAY")
-	levelText:SetFontObject(GameFontNormalSmall)
-	levelText:SetJustifyH("LEFT")
-	levelText:SetTextColor(1, 0.85, 0.25, 1)
-	levelText:SetPoint("LEFT", classIcon, "RIGHT", 2, 0)
-	levelText:Hide()
-	f.levelText = levelText
-
-	-- Main Tank / Main Assist (Off-Tank) Icon at the top-left corner of the health bar
-	local tankIcon = markerHolder:CreateTexture(nil, "OVERLAY")
-	tankIcon:SetSize(11, 11)
-	tankIcon:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 1, 0)
-	tankIcon:Hide()
-	f.tankIcon = tankIcon
-
-	-- Raid / Party Leader Crown Icon at the top-left of the health bar (shifts right if tankIcon is shown)
-	local leaderIcon = markerHolder:CreateTexture(nil, "OVERLAY")
-	leaderIcon:SetSize(11, 11)
-	leaderIcon:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 1, 0)
-	leaderIcon:Hide()
-	f.leaderIcon = leaderIcon
-
-	-- Circular 2D Portrait on the left side in 5-player Party mode
-	local portraitFrame = CreateFrame("Frame", nil, vf)
-	portraitFrame:SetSize(30, 30)
-	portraitFrame:SetPoint("LEFT", f, "LEFT", 4, 0)
-	portraitFrame:Hide()
-	local portraitBg = portraitFrame:CreateTexture(nil, "BACKGROUND")
-	portraitBg:SetAllPoints(portraitFrame)
-	portraitBg:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-	portraitBg:SetVertexColor(0.06, 0.08, 0.12, 0.92)
-	local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
-	portrait:SetAllPoints(portraitFrame)
-	if portraitFrame.CreateMaskTexture then
-		local mask = portraitFrame:CreateMaskTexture()
-		mask:SetAllPoints(portrait)
-		mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-		portrait:AddMaskTexture(mask)
-	end
-	local portraitBorder = portraitFrame:CreateTexture(nil, "OVERLAY")
-	portraitBorder:SetPoint("CENTER", portraitFrame, "CENTER", 0, 0)
-	portraitBorder:SetSize(42, 42)
-	portraitBorder:SetTexture("Interface\\CharacterFrame\\TotemBorder")
-	portraitBorder:SetVertexColor(0.85, 0.78, 0.62, 0.95)
-	f.portraitFrame = portraitFrame
-	f.portrait = portrait
-	f.portraitBorder = portraitBorder
-
-	-- Voice chat speaker indicator (hidden unless teammate is actively speaking)
-	local voiceIcon = markerHolder:CreateTexture(nil, "OVERLAY")
-	voiceIcon:SetSize(13, 13)
-	voiceIcon:SetPoint("BOTTOMLEFT", portraitFrame, "BOTTOMLEFT", -2, -2)
-	voiceIcon:Hide()
-	f.voiceIcon = voiceIcon
+	self:InitUnitFrameVisuals(f, false)
 
 	f.isPetGroupFrame = (header and header.isPetHeader) and true or false
 
@@ -4226,6 +4409,99 @@ function sRaidFrames:SyncAttachedPetNativeAuras(pf, petUnit)
 	pcall(pf.nativeBuffBox.SetShown, pf.nativeBuffBox, u ~= "none")
 end
 
+function sRaidFrames:InitAttachedPetVisuals(pf)
+	local pvf = pf._visualFrame or pf
+	local texture = Media:Fetch("statusbar", self.opt.Texture)
+
+	local portraitFrame = CreateFrame("Frame", nil, pvf)
+	portraitFrame:SetSize(16, 16)
+	portraitFrame:SetPoint("LEFT", pf, "LEFT", 3, 0)
+	portraitFrame:Hide()
+	local portraitBg = portraitFrame:CreateTexture(nil, "BACKGROUND")
+	portraitBg:SetAllPoints(portraitFrame)
+	portraitBg:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
+	portraitBg:SetVertexColor(0.06, 0.08, 0.12, 0.92)
+	local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
+	portrait:SetAllPoints(portraitFrame)
+	if portraitFrame.CreateMaskTexture then
+		local mask = portraitFrame:CreateMaskTexture()
+		mask:SetAllPoints(portrait)
+		mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+		portrait:AddMaskTexture(mask)
+	end
+	local portraitBorder = portraitFrame:CreateTexture(nil, "OVERLAY")
+	portraitBorder:SetPoint("CENTER", portraitFrame, "CENTER", 0, 0)
+	portraitBorder:SetSize(22, 22)
+	portraitBorder:SetTexture("Interface\\CharacterFrame\\TotemBorder")
+	portraitBorder:SetVertexColor(0.85, 0.78, 0.62, 0.95)
+	pf.portraitFrame = portraitFrame
+	pf.portrait = portrait
+	pf.portraitBorder = portraitBorder
+
+	pf.hpbar = CreateFrame("StatusBar", nil, pvf)
+	pf.hpbar:SetStatusBarTexture(texture)
+	pf.hpbar:SetMinMaxValues(0, 100)
+	pf.hpbar:SetValue(100)
+	pcall(pf.hpbar.SetClipsChildren, pf.hpbar, true)
+	pf.hpbar.bg = pf.hpbar:CreateTexture(nil, "BACKGROUND")
+	pf.hpbar.bg:SetAllPoints(pf.hpbar)
+	pf.hpbar.bg:SetColorTexture(0.08, 0.10, 0.14, 0.88)
+
+	pf.healbar = CreateFrame("StatusBar", nil, pf.hpbar)
+	pf.healbar:SetStatusBarTexture(texture)
+	pf.healbar:SetStatusBarColor(0.32, 0.72, 0.42, 0.78)
+	pf.healbar:SetMinMaxValues(0, 100)
+	pf.healbar:SetValue(0)
+	pf.healbar:SetPoint("TOPLEFT", pf.hpbar:GetStatusBarTexture(), "TOPRIGHT", 0, 0)
+	pf.healbar:SetPoint("BOTTOMLEFT", pf.hpbar:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
+	pf.healbar:SetFrameLevel(pf.hpbar:GetFrameLevel())
+	pf.healbar:Hide()
+
+	pf.hpbar.text = pf.hpbar:CreateFontString(nil, "OVERLAY")
+	local fontPath = (GameFontNormalSmall and GameFontNormalSmall:GetFont()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+	pf.hpbar.text:SetFont(fontPath, 8, "OUTLINE")
+	pf.hpbar.text:SetJustifyH("LEFT")
+	if pf.hpbar.text.SetWordWrap then pf.hpbar.text:SetWordWrap(false) end
+	pf.hpbar.text:SetTextColor(0.95, 0.98, 0.95, 1)
+
+	local hl = CreateFrame("Frame", nil, pvf, BackdropTemplateMixin and "BackdropTemplate" or nil)
+	hl:SetAllPoints(pf)
+	hl:SetFrameLevel(pf.hpbar:GetFrameLevel() + 8)
+	if hl.SetBackdrop then
+		hl:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+		hl:SetBackdropBorderColor(1, 0.92, 0.25, 1)
+	end
+	hl:Hide()
+	pf.targetHighlight = hl
+
+	pf.buffs = {}
+	for i = 1, 3 do
+		local icon = CreateFrame("Frame", nil, pf.hpbar)
+		icon:SetSize(9, 9)
+		icon:SetFrameLevel(pf.hpbar:GetFrameLevel() + 5)
+		if i == 1 then
+			icon:SetPoint("TOPRIGHT", pf.hpbar, "TOPRIGHT", -1, -1)
+		else
+			icon:SetPoint("RIGHT", pf.buffs[i - 1], "LEFT", -1, 0)
+		end
+		icon.border = icon:CreateTexture(nil, "BACKGROUND")
+		icon.border:SetAllPoints(icon)
+		icon.border:SetColorTexture(0.1, 0.1, 0.1, 0.9)
+		icon.texture = icon:CreateTexture(nil, "ARTWORK")
+		icon.texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
+		icon.texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+		icon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		icon.cooldown = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
+		icon.cooldown:SetAllPoints(icon.texture)
+		icon.cooldown:SetReverse(true)
+		if icon.cooldown.SetDrawEdge then icon.cooldown:SetDrawEdge(false) end
+		if icon.cooldown.SetDrawBling then icon.cooldown:SetDrawBling(false) end
+		if icon.cooldown.SetHideCountdownNumbers then icon.cooldown:SetHideCountdownNumbers(true) end
+		icon:Hide()
+		pf.buffs[i] = icon
+	end
+end
+
 function sRaidFrames:CreateAttachedPetFrame(f, name)
 	if not f or f.petframe or f.isPetGroupFrame or privateFuncs.IsInCombat() then return end
 	local petName = (name or f:GetName() or "sRaidFramesUnit") .. "Pet"
@@ -4263,101 +4539,7 @@ function sRaidFrames:CreateAttachedPetFrame(f, name)
 		end
 	end)
 
-	local texture = Media:Fetch("statusbar", self.opt.Texture)
-
-	-- Circular 2D pet portrait (shown in 5-player Party attached mode)
-	local portraitFrame = CreateFrame("Frame", nil, pvf)
-	portraitFrame:SetSize(16, 16)
-	portraitFrame:SetPoint("LEFT", pf, "LEFT", 3, 0)
-	portraitFrame:Hide()
-	local portraitBg = portraitFrame:CreateTexture(nil, "BACKGROUND")
-	portraitBg:SetAllPoints(portraitFrame)
-	portraitBg:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-	portraitBg:SetVertexColor(0.06, 0.08, 0.12, 0.92)
-	local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
-	portrait:SetAllPoints(portraitFrame)
-	if portraitFrame.CreateMaskTexture then
-		local mask = portraitFrame:CreateMaskTexture()
-		mask:SetAllPoints(portrait)
-		mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-		portrait:AddMaskTexture(mask)
-	end
-	local portraitBorder = portraitFrame:CreateTexture(nil, "OVERLAY")
-	portraitBorder:SetPoint("CENTER", portraitFrame, "CENTER", 0, 0)
-	portraitBorder:SetSize(22, 22)
-	portraitBorder:SetTexture("Interface\\CharacterFrame\\TotemBorder")
-	portraitBorder:SetVertexColor(0.85, 0.78, 0.62, 0.95)
-	pf.portraitFrame = portraitFrame
-	pf.portrait = portrait
-	pf.portraitBorder = portraitBorder
-
-	-- Pet Health StatusBar
-	pf.hpbar = CreateFrame("StatusBar", nil, pvf)
-	pf.hpbar:SetStatusBarTexture(texture)
-	pf.hpbar:SetMinMaxValues(0, 100)
-	pf.hpbar:SetValue(100)
-	pcall(pf.hpbar.SetClipsChildren, pf.hpbar, true)
-	pf.hpbar.bg = pf.hpbar:CreateTexture(nil, "BACKGROUND")
-	pf.hpbar.bg:SetAllPoints(pf.hpbar)
-	pf.hpbar.bg:SetColorTexture(0.08, 0.10, 0.14, 0.88)
-
-	-- Pet Incoming Heal Prediction bar (parented & clipped to pf.hpbar)
-	pf.healbar = CreateFrame("StatusBar", nil, pf.hpbar)
-	pf.healbar:SetStatusBarTexture(texture)
-	pf.healbar:SetStatusBarColor(0.32, 0.72, 0.42, 0.78)
-	pf.healbar:SetMinMaxValues(0, 100)
-	pf.healbar:SetValue(0)
-	pf.healbar:SetPoint("TOPLEFT", pf.hpbar:GetStatusBarTexture(), "TOPRIGHT", 0, 0)
-	pf.healbar:SetPoint("BOTTOMLEFT", pf.hpbar:GetStatusBarTexture(), "BOTTOMRIGHT", 0, 0)
-	pf.healbar:SetFrameLevel(pf.hpbar:GetFrameLevel())
-	pf.healbar:Hide()
-
-	-- Compact Pet Name + HP% Text (Party attached mode)
-	pf.hpbar.text = pf.hpbar:CreateFontString(nil, "OVERLAY")
-	local fontPath = (GameFontNormalSmall and GameFontNormalSmall:GetFont()) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-	pf.hpbar.text:SetFont(fontPath, 8, "OUTLINE")
-	pf.hpbar.text:SetJustifyH("LEFT")
-	if pf.hpbar.text.SetWordWrap then pf.hpbar.text:SetWordWrap(false) end
-	pf.hpbar.text:SetTextColor(0.95, 0.98, 0.95, 1)
-
-	-- Target highlight border overlay
-	local hl = CreateFrame("Frame", nil, pvf, BackdropTemplateMixin and "BackdropTemplate" or nil)
-	hl:SetAllPoints(pf)
-	hl:SetFrameLevel(pf.hpbar:GetFrameLevel() + 8)
-	if hl.SetBackdrop then
-		hl:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-		hl:SetBackdropBorderColor(1, 0.92, 0.25, 1)
-	end
-	hl:Hide()
-	pf.targetHighlight = hl
-
-	-- Low-pixel fallback Lua aura icons inside TOPRIGHT of pet health bar (9x9)
-	pf.buffs = {}
-	for i = 1, 3 do
-		local icon = CreateFrame("Frame", nil, pf.hpbar)
-		icon:SetSize(9, 9)
-		icon:SetFrameLevel(pf.hpbar:GetFrameLevel() + 5)
-		if i == 1 then
-			icon:SetPoint("TOPRIGHT", pf.hpbar, "TOPRIGHT", -1, -1)
-		else
-			icon:SetPoint("RIGHT", pf.buffs[i - 1], "LEFT", -1, 0)
-		end
-		icon.border = icon:CreateTexture(nil, "BACKGROUND")
-		icon.border:SetAllPoints(icon)
-		icon.border:SetColorTexture(0.1, 0.1, 0.1, 0.9)
-		icon.texture = icon:CreateTexture(nil, "ARTWORK")
-		icon.texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
-		icon.texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
-		icon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		icon.cooldown = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
-		icon.cooldown:SetAllPoints(icon.texture)
-		icon.cooldown:SetReverse(true)
-		if icon.cooldown.SetDrawEdge then icon.cooldown:SetDrawEdge(false) end
-		if icon.cooldown.SetDrawBling then icon.cooldown:SetDrawBling(false) end
-		if icon.cooldown.SetHideCountdownNumbers then icon.cooldown:SetHideCountdownNumbers(true) end
-		icon:Hide()
-		pf.buffs[i] = icon
-	end
+	self:InitAttachedPetVisuals(pf)
 
 	self:CreateAttachedPetNativeAuras(pf)
 
@@ -4641,9 +4823,16 @@ function sRaidFrames:ApplyPetMode()
 	self:ApplyLayout()
 	self:SyncAttachedPetWatches()
 	self:RefreshAllNativeAuraContainers()
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
+	end
 end
 
 function sRaidFrames:CreateFrames()
+	if privateFuncs.IsInCombat() then
+		self:ScheduleLeaveCombatAction("CreateFrames")
+		return
+	end
 	local setup = self:GetCurrentGroupSetup() or {}
 	local neededGroups = #setup
 	local createdGroups = #self.groupframes
@@ -4659,7 +4848,10 @@ function sRaidFrames:CreateFrames()
 end
 
 function sRaidFrames:SetGroupFilters()
-	if privateFuncs.IsInCombat() then return end
+	if privateFuncs.IsInCombat() then
+		self:ScheduleLeaveCombatAction("SetGroupFilters")
+		return
+	end
 
 	local inRaid = IsInRaid()
 	for _, f in pairs(self.groupframes) do
@@ -4845,7 +5037,7 @@ function sRaidFrames:SetGrowth()
 		self:ScheduleLeaveCombatAction("SetGrowth")
 		return
 	end
-	local inParty = (not IsInRaid()) and self.opt.ShowInParty
+	local inParty = (not self:IsEffectiveInRaid()) and self.opt.ShowInParty
 	for i, f in pairs(self.groupframes) do
 		f.header:ClearAllPoints()
 		local growth = (inParty and i == 1) and (self.opt.PartyGrowth or "down") or self.opt.Growth["default"]
@@ -4895,7 +5087,7 @@ function sRaidFrames:SetSpacing()
 		self:ScheduleLeaveCombatAction("SetSpacing")
 		return
 	end
-	local inParty = (not IsInRaid()) and self.opt.ShowInParty
+	local inParty = (not self:IsEffectiveInRaid()) and self.opt.ShowInParty
 	local baseSpacing = inParty and (self.opt.PartySpacing or 8) or (self.opt.Spacing or 0)
 	local petReserve = self:GetPartyPetSpacingReserve()
 	for i, f in pairs(self.groupframes) do
@@ -4935,6 +5127,9 @@ function sRaidFrames:SetSpacing()
 			self.petGroup.header:SetAttribute("xOffset", baseSpacing)
 			self.petGroup.header:SetAttribute("yOffset", 0)
 		end
+	end
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
 	end
 end
 
@@ -5162,13 +5357,18 @@ function sRaidFrames:GetAllUnits()
 	return self.FramesByUnit
 end
 
+local EMPTY_TABLE = {}
+
 function sRaidFrames:FindUnitFrames(unit)
 	if ShouldUpdateFrameCache then self:UpdateFrameCache() end
-	return self.FramesByUnit[unit] or {}
+	return self.FramesByUnit[unit] or EMPTY_TABLE
 end
 
 function sRaidFrames:GetNonVehicleUnit(unit)
 	if not unit or IsSecret(unit) then return unit end
+	if unit == "pet" and self.opt.VehicleSwitch and UnitHasVehicleUI("player") then
+		return "player"
+	end
 	local noPet = unit:gsub("[pP][eE][tT](%d)", "%1")
 	if self.opt.VehicleSwitch and UnitHasVehicleUI(noPet) then
 		unit = noPet
@@ -5179,6 +5379,7 @@ end
 function sRaidFrames:GetVehicleUnit(unit)
 	if not unit or IsSecret(unit) then return unit end
 	if self.opt.VehicleSwitch and UnitHasVehicleUI(unit) then
+		if unit == "player" then return "pet" end
 		unit = unit .. "pet"
 		unit = gsub(unit, "^([^%d]+)([%d]+)[pP][eE][tT]", "%1pet%2")
 	end
@@ -5223,6 +5424,17 @@ function sRaidFrames:SavePosition()
 	end
 end
 
+local function GetRaidGridMetrics(self)
+	local curLayout = self:GetLayout()
+	local raidW = self.opt.FrameWidth or 90
+	local raidPad = (curLayout.padY ~= nil) and (curLayout.padY * 2) or (curLayout.HasBorders and 8 or 0)
+	local raidUnitH = max(14, (self.opt.FontSize or 10) + 6) + (self.opt.HealthBarHeight or 12) + (self.opt.PowerBarHeight or 4) + raidPad
+	local frameHeight = raidUnitH + 3 + (self.opt.Spacing or 0)
+	local headerH = curLayout.headerHeight or 22
+	local framePadding = MEMBERS_PER_RAID_GROUP or 5
+	return raidW, frameHeight, headerH, framePadding
+end
+
 function sRaidFrames:RestorePosition()
 	local aryPos = self.opt.Positions[self.opt.GroupSetup] or {}
 
@@ -5237,10 +5449,7 @@ function sRaidFrames:RestorePosition()
 	end
 
 	-- Self-heal profiles where only Group 1 was saved in Positions (so Groups 2..N still get valid 4x2 grid anchors)
-	local curLayout = self:GetLayout()
-	local frameHeight = (curLayout and curLayout.unitframeHeight or 36) + 3 + (self.opt.Spacing or 0)
-	local headerH = (curLayout and curLayout.headerHeight) or 22
-	local framePadding = MEMBERS_PER_RAID_GROUP or 5
+	local raidW, frameHeight, headerH, framePadding = GetRaidGridMetrics(self)
 	local g1 = self.groupframes[1]
 	local g1Pos = aryPos[1]
 	for k = 1, #self.groupframes do
@@ -5248,21 +5457,27 @@ function sRaidFrames:RestorePosition()
 		if frame and not aryPos[k] then
 			local col = fmod(k - 1, 4)
 			local row = floor((k - 1) / 4)
-			local xOff = col * ((frame:GetWidth() > 0 and frame:GetWidth() or 90) + 6)
+			local xOff = col * (raidW + 6)
 			local yOff = -1 * row * (framePadding * frameHeight + headerH + 10)
 			frame:ClearAllPoints()
 			if k > 1 and g1 and g1Pos and g1Pos.x and g1Pos.y then
 				local s = frame:GetEffectiveScale()
 				frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", (g1Pos.x / s) + xOff, (g1Pos.y / s) + yOff)
 			else
-				frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 160 + xOff, -140 + yOff)
+				frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 24 + xOff, -155 + yOff)
 			end
 		end
 	end
 
-	if self.petGroup and not aryPos["pets"] and self.groupframes[1] then
-		self.petGroup:ClearAllPoints()
-		self.petGroup:SetPoint("TOPLEFT", self.groupframes[1], "TOPRIGHT", 10, 0)
+	if self.petGroup and not aryPos["pets"] then
+		local refGroup = self.groupframes[4] or self.groupframes[1]
+		if refGroup then
+			self.petGroup:ClearAllPoints()
+			self.petGroup:SetPoint("TOPLEFT", refGroup, "TOPRIGHT", 6, 0)
+		end
+	end
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
 	end
 end
 
@@ -5288,23 +5503,20 @@ function sRaidFrames:ResetPosition()
 	end
 	self:ApplyLayout()
 	self:SetGrowth()
-	self:PositionLayout("ctra", 160, -140)
+	self:PositionLayout("ctra", 24, -155)
 	self:RefreshAllNativeAuraContainers()
 end
 
 function sRaidFrames:PositionLayout(layout, xBuffer, yBuffer)
 	local xMod, yMod, i = 0, 0, -1
-	local curLayout = self:GetLayout()
-	local frameHeight = curLayout.unitframeHeight + 3 + (self.opt.Spacing or 0)
-	local headerH = curLayout.headerHeight or 22
-	local framePadding = MEMBERS_PER_RAID_GROUP or 5
+	local raidW, frameHeight, headerH, framePadding = GetRaidGridMetrics(self)
 
 	for k = 1, #self.groupframes do
 		local frame = self.groupframes[k]
 		if frame then
 			i = i + 1
 			if layout == "horizontal" then
-				yMod = i * (frame:GetWidth() + 4)
+				yMod = i * (raidW + 4)
 				xMod = 0
 			elseif layout == "vertical" then
 				if i ~= 0 and fmod(i, 2) == 0 then
@@ -5312,13 +5524,13 @@ function sRaidFrames:PositionLayout(layout, xBuffer, yBuffer)
 					yMod = 0
 					i = 0
 				else
-					yMod = i * (frame:GetWidth() + 4)
+					yMod = i * (raidW + 4)
 				end
 			elseif layout == "ctra" then
 				-- Default 4x2 grid: Groups 1-4 on top row, Groups 5-8 on bottom row
 				local col = fmod(k - 1, 4)
 				local row = floor((k - 1) / 4)
-				yMod = col * (frame:GetWidth() + 6)
+				yMod = col * (raidW + 6)
 				xMod = -1 * row * (framePadding * frameHeight + headerH + 10)
 			end
 
@@ -5328,13 +5540,945 @@ function sRaidFrames:PositionLayout(layout, xBuffer, yBuffer)
 	end
 
 	if self.petGroup then
-		local refW = (self.groupframes[1] and self.groupframes[1]:GetWidth()) or curLayout.headerWidth or 90
-		local petX = xBuffer + (IsInRaid() and (4 * (refW + 6)) or (refW + 10))
+		local petX = xBuffer + (4 * (raidW + 6))
+		if layout == "vertical" then
+			petX = xBuffer + (2 * (raidW + 4)) + 8
+		elseif layout == "horizontal" then
+			petX = xBuffer + (8 * (raidW + 4)) + 6
+		end
 		self.petGroup:ClearAllPoints()
 		self.petGroup:SetPoint("TOPLEFT", UIParent, "TOPLEFT", petX, yBuffer)
 	end
 
 	self:SavePosition()
+	if self.testMode and self.testMode ~= "off" and self.RefreshTestFrames then
+		self:RefreshTestFrames()
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Combat-Safe Solo Test Mode (Party / 10 / 20 / 40 Raid + Pets)
+-------------------------------------------------------------------------------
+sRaidFrames.testMode = "off"
+
+local TEST_CLASS_ORDER = {
+	"WARRIOR", "HUNTER", "WARLOCK", "MAGE", "DRUID",
+	"PALADIN", "PRIEST", "ROGUE", "SHAMAN",
+}
+
+local TEST_PARTY_SAMPLES = {
+	{ full = "Carlos Ironforge",   first = "Carlos",    second = "Ironforge",  class = "WARRIOR", role = "TANK",    tank = "MT", lead = true,  hp = 0.86, inc = 0.00, absorb = 0.35, mp = 0.42, power = Compat.POWER_RAGE,   race = "Human",    gender = "Male",   lvl = 60, isPlayer = true,  mark = 2 },
+	{ full = "Sylvan Windrunner",  first = "Sylvan",    second = "Windrunner", class = "HUNTER",  role = "DAMAGER", voice = true,            hp = 1.00, inc = 0.00, absorb = 0.00, mp = 0.64, power = Compat.POWER_MANA,   race = "NightElf", gender = "Female", lvl = 60, mark = 1, pet = { name = "Ghostclaw", hp = 0.74, inc = 0.18, absorb = 0.25, icon = "Interface\\Icons\\Ability_Mount_SpectralTiger", buffs = { "Interface\\Icons\\Ability_Hunter_MendPet", "Interface\\Icons\\Spell_Holy_Renew" } } },
+	{ full = "Vesper Shadowveil",  first = "Vesper",    second = "Shadowveil", class = "WARLOCK", role = "DAMAGER", dispel = "Magic",        hp = 0.68, inc = 0.18, absorb = 0.00, mp = 0.82, power = Compat.POWER_MANA,   race = "Human",    gender = "Female", lvl = 60, pet = { name = "Voidwalker", hp = 0.52, inc = 0.26, absorb = 0.40, icon = "Interface\\Icons\\Spell_Shadow_SummonVoidWalker", buffs = { "Interface\\Icons\\Spell_Holy_PowerWordShield", "Interface\\Icons\\Spell_Holy_Renew" } } },
+	{ full = "Kaelen Stargaze",    first = "Kaelen",    second = "Stargaze",   class = "MAGE",    role = "DAMAGER", dbm = true,             hp = 0.54, inc = 0.22, absorb = 0.45, mp = 0.58, power = Compat.POWER_MANA,   race = "Human",    gender = "Male",   lvl = 60 },
+	{ full = "Elunia Moonshadow",  first = "Elunia",    second = "Moonshadow", class = "DRUID",   role = "HEALER",                           hp = 0.95, inc = 0.00, absorb = 0.20, mp = 0.88, power = Compat.POWER_MANA,   race = "NightElf", gender = "Female", lvl = 60 },
+}
+
+local TEST_RAID_NAMES = {
+	{ "Carlos",   "Ironforge" },   { "Elunia",  "Moonshadow" }, { "Thorin",   "Lightbringer" }, { "Kaelen",  "Stargaze" },   { "Grom",    "Hellscream" },
+	{ "Tyrande",  "Whisperwind" }, { "Anduin",  "Wrynn" },      { "Varian",   "Lothar" },       { "Kael",    "Sunstrider" }, { "Sylvan",  "Windrunner" },
+	{ "Thrall",   "Frostwolf" },   { "Guldan",  "Shadowveil" }, { "Malf",     "Stormrage" },    { "Jaina",   "Proudmoore" }, { "Tirion",  "Fordring" },
+	{ "Arthas",   "Menethil" },    { "Rexxar",  "Moknathal" },  { "Medivh",   "Aegwynn" },      { "Garrosh", "Gorehowl" },   { "Benedict","Dawnlight" },
+	{ "Valeera",  "Sanguinar" },   { "Voljin",  "Darkspear" },  { "Alleria",  "Windrunner" },   { "Velen",   "Karabor" },    { "Muradin", "Bronzebeard" },
+	{ "Rhonin",   "Dalaran" },     { "Liadrin", "Bloodsworn" }, { "Hamuul",   "Runetotem" },    { "Jastor",  "Gallywix" },   { "Garona",  "Halforcen" },
+	{ "Turalyon", "Silverhand" },  { "Nathan",  "Blightcall" }, { "Aggra",    "Frostwolf" },    { "Akama",   "Ashtongue" },  { "Ysera",   "Dreamweaver" },
+	{ "Khadgar",  "Karazhan" },    { "Darion",  "Mograine" },   { "Alonsus",  "Faol" },         { "Aegwynn", "Tirisfal" },   { "Olgra",   "Stonetalon" },
+}
+
+local TEST_PET_SAMPLES = {
+	{ name = "Ghostclaw",  ownerClass = "HUNTER",  hp = 0.92, inc = 0.00, absorb = 0.30, icon = "Interface\\Icons\\Ability_Mount_SpectralTiger",      buffs = { "Interface\\Icons\\Ability_Hunter_MendPet", "Interface\\Icons\\Spell_Holy_Renew" } },
+	{ name = "Voidwalker", ownerClass = "WARLOCK", hp = 0.56, inc = 0.24, absorb = 0.45, icon = "Interface\\Icons\\Spell_Shadow_SummonVoidWalker",    dispel = "Magic", buffs = { "Interface\\Icons\\Spell_Holy_PowerWordShield", "Interface\\Icons\\Spell_Holy_Renew" } },
+	{ name = "TimberWolf", ownerClass = "HUNTER",  hp = 1.00, inc = 0.00, absorb = 0.00, icon = "Interface\\Icons\\Ability_Mount_WhiteDireWolf",      buffs = { "Interface\\Icons\\Ability_Hunter_MendPet" } },
+	{ name = "Felhunter",  ownerClass = "WARLOCK", hp = 0.74, inc = 0.16, absorb = 0.20, icon = "Interface\\Icons\\Spell_Shadow_SummonFelHunter",     buffs = { "Interface\\Icons\\Spell_Holy_PowerWordShield" } },
+	{ name = "Raptor",     ownerClass = "HUNTER",  hp = 0.85, inc = 0.00, absorb = 0.00, icon = "Interface\\Icons\\Ability_Mount_Raptor",             buffs = { "Interface\\Icons\\Spell_Holy_Renew" } },
+	{ name = "Imp",        ownerClass = "WARLOCK", hp = 0.64, inc = 0.00, absorb = 0.35, icon = "Interface\\Icons\\Spell_Shadow_SummonImp",           buffs = { "Interface\\Icons\\Spell_Holy_PowerWordShield" } },
+}
+
+function sRaidFrames:FormatTestName(first, second, full)
+	local fmt = self.opt and self.opt.NameFormat or "full"
+	if fmt == "first" then return first end
+	if fmt == "surname" or fmt == "second" then return second end
+	return full
+end
+
+function sRaidFrames:BuildTestRaidSample(idx)
+	local pair = TEST_RAID_NAMES[((idx - 1) % #TEST_RAID_NAMES) + 1]
+	local cls = TEST_CLASS_ORDER[((idx - 1) % #TEST_CLASS_ORDER) + 1]
+	local power = Compat.POWER_MANA
+	if cls == "WARRIOR" then power = Compat.POWER_RAGE
+	elseif cls == "ROGUE" then power = Compat.POWER_ENERGY end
+
+	local hp = 0.92
+	local inc = 0
+	local absorb = 0
+	local dispel, dbm, aggro, oor, dead, tank, lead = nil, false, false, false, false, nil, false
+	local pet = nil
+
+	if idx == 1 then tank = "MT"; lead = true; hp = 0.95; absorb = 0.42
+	elseif idx == 3 then tank = "OT"; dispel = "Magic"; hp = 0.86
+	elseif idx == 4 then dbm = true; hp = 0.62; inc = 0.22; absorb = 0.35
+	elseif idx == 8 then tank = "MT"; aggro = true; hp = 0.74; inc = 0.14; absorb = 0.50
+	elseif idx == 9 then dispel = "Curse"; hp = 0.85
+	elseif idx == 12 then dispel = "Disease"; hp = 0.44; inc = 0.28
+	elseif idx == 15 then tank = "OT"; hp = 0.68; inc = 0.18; absorb = 0.25
+	elseif idx == 17 then dispel = "Poison"; hp = 0.87
+	elseif idx == 19 then dbm = true; hp = 0.35; inc = 0.32
+	elseif idx == 26 then dead = true; hp = 0
+	elseif idx == 40 then oor = true; hp = 0.79
+	elseif (idx % 5) == 0 then hp = 1.00
+	elseif (idx % 3) == 0 then hp = 0.78; absorb = 0.28 end
+
+	if cls == "HUNTER" then
+		pet = { name = "Pet", hp = 0.88, inc = 0.00, absorb = 0.20, buffs = {} }
+	elseif cls == "WARLOCK" then
+		pet = { name = "Demon", hp = 0.62, inc = 0.18, absorb = 0.35, buffs = {} }
+	end
+
+	return {
+		full = pair[1] .. " " .. pair[2],
+		first = pair[1],
+		second = pair[2],
+		class = cls,
+		tank = tank,
+		lead = lead,
+		hp = hp,
+		inc = inc,
+		absorb = absorb,
+		mp = (idx % 4 == 0) and 0.52 or 0.80,
+		power = power,
+		lvl = 60,
+		dispel = dispel,
+		dbm = dbm,
+		aggro = aggro,
+		oor = oor,
+		dead = dead,
+		pet = pet,
+	}
+end
+
+function sRaidFrames:SyncTestGroupPositionsToReal()
+	if InCombatLockdown() or not self.testGroups then return end
+	if not self.opt.Positions[self.opt.GroupSetup] then
+		self.opt.Positions[self.opt.GroupSetup] = {}
+	end
+	for k, tf in pairs(self.testGroups) do
+		local rf = self.groupframes[k]
+		if rf and tf then
+			local x, y = tf:GetLeft(), tf:GetTop()
+			if x and y then
+				rf:ClearAllPoints()
+				rf:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, y)
+			end
+		end
+	end
+	if self.testPetGroup and self.petGroup then
+		local x, y = self.testPetGroup:GetLeft(), self.testPetGroup:GetTop()
+		if x and y then
+			self.petGroup:ClearAllPoints()
+			self.petGroup:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, y)
+		end
+	end
+	self:SavePosition()
+end
+
+function sRaidFrames:StartMovingAllTest(fg, this)
+	this.multidrag = 1
+	local x, y = fg:GetLeft(), fg:GetTop()
+	if not x or not y then return end
+	for _, tf in pairs(self.testGroups) do
+		if tf ~= fg then
+			local oX, oY = tf:GetLeft(), tf:GetTop()
+			if oX and oY then
+				tf:ClearAllPoints()
+				tf:SetPoint("TOPLEFT", fg, "TOPLEFT", oX - x, oY - y)
+			end
+		end
+	end
+	if self.testPetGroup and self.testPetGroup ~= fg then
+		local oX, oY = self.testPetGroup:GetLeft(), self.testPetGroup:GetTop()
+		if oX and oY then
+			self.testPetGroup:ClearAllPoints()
+			self.testPetGroup:SetPoint("TOPLEFT", fg, "TOPLEFT", oX - x, oY - y)
+		end
+	end
+end
+
+function sRaidFrames:StopMovingAllTest(fg, this)
+	this.multidrag = nil
+	for _, tf in pairs(self.testGroups) do
+		if tf ~= fg then
+			local oX, oY = tf:GetLeft(), tf:GetTop()
+			if oX and oY then
+				tf:ClearAllPoints()
+				tf:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", oX, oY)
+			end
+		end
+	end
+	if self.testPetGroup and self.testPetGroup ~= fg then
+		local oX, oY = self.testPetGroup:GetLeft(), self.testPetGroup:GetTop()
+		if oX and oY then
+			self.testPetGroup:ClearAllPoints()
+			self.testPetGroup:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", oX, oY)
+		end
+	end
+end
+
+function sRaidFrames:AttachTestDragHandlers(dragFrame, groupFrame, titleText)
+	dragFrame:EnableMouse(true)
+	dragFrame:RegisterForDrag("LeftButton")
+	dragFrame:SetScript("OnDragStart", function(this)
+		if sRaidFrames.opt.Locked or privateFuncs.IsInCombat() or not groupFrame then return end
+		this._isDragging = true
+		if IsAltKeyDown() then sRaidFrames:StartMovingAllTest(groupFrame, this) end
+		groupFrame:StartMoving()
+	end)
+	dragFrame:SetScript("OnDragStop", function(this)
+		if not this._isDragging or not groupFrame then return end
+		this._isDragging = nil
+		if this.multidrag == 1 then
+			sRaidFrames:StopMovingAllTest(groupFrame, this)
+		end
+		pcall(groupFrame.StopMovingOrSizing, groupFrame)
+		if not privateFuncs.IsInCombat() then
+			sRaidFrames:SyncTestGroupPositionsToReal()
+		end
+	end)
+	dragFrame:SetScript("OnEnter", function(this)
+		if not GameTooltip then return end
+		GameTooltip:SetOwner(this, "ANCHOR_TOP")
+		GameTooltip:SetText(titleText or "sRaidFrames")
+		if sRaidFrames.opt.Locked then
+			GameTooltip:AddLine(L["Frames are locked. Uncheck Lock in /srf to drag."] or "Frames are locked. Uncheck Lock in /srf to drag.", 0.85, 0.85, 0.85)
+		else
+			GameTooltip:AddLine(L["Drag: Move this group"] or "Drag: Move this group", 1, 1, 1)
+			GameTooltip:AddLine(L["Alt + Drag: Move all 8 groups together"] or "Alt + Drag: Move all 8 groups together", 0.2, 1, 0.2)
+		end
+		GameTooltip:Show()
+	end)
+	dragFrame:SetScript("OnLeave", function()
+		if GameTooltip then GameTooltip:Hide() end
+	end)
+end
+
+function sRaidFrames:CreateTestUnitFrame(parentGroup, isPetGroup)
+	local f = CreateFrame("Button", nil, parentGroup)
+	Compat.AttachSafeUnitBackdrop(f)
+	f.isPetGroupFrame = isPetGroup and true or false
+	self:InitUnitFrameVisuals(f, true)
+	self:AttachTestDragHandlers(f, parentGroup, L["Test Preview"] or "Test Preview")
+
+	if not isPetGroup then
+		local pf = CreateFrame("Frame", nil, f)
+		Compat.AttachSafeUnitBackdrop(pf)
+		pf.ownerFrame = f
+		self:InitAttachedPetVisuals(pf)
+		pf:Hide()
+		f.petframe = pf
+		tinsert(self.testFrames, f)
+	else
+		tinsert(self.testPetFrames, f)
+	end
+
+	local layout = self:GetLayout()
+	if layout and layout.StyleUnitFrame then
+		layout.StyleUnitFrame(f)
+	end
+	f:Hide()
+	return f
+end
+
+function sRaidFrames:CreateTestInfrastructure()
+	if self.testMaster then return end
+	local layout = self:GetLayout()
+
+	local tm = CreateFrame("Frame", "sRaidFramesTestMaster", UIParent)
+	tm:SetFrameStrata("MEDIUM")
+	tm:SetSize(200, 200)
+	tm:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 0, 0)
+	tm:SetScale(self.opt.Scale or 1)
+	tm:Hide()
+	self.testMaster = tm
+	self.testGroups = {}
+	self.testFrames = {}
+	self.testPetFrames = {}
+
+	for i = 1, 8 do
+		local tg = CreateFrame("Frame", "sRaidFramesTestGroupBase" .. i, tm)
+		tg:SetSize(layout.headerWidth or 90, layout.headerHeight or 22)
+		tg:SetMovable(true)
+		tg:SetID(i)
+
+		tg.anchor = CreateFrame("Button", nil, tg)
+		tg.anchor:SetSize(layout.headerWidth or 90, layout.headerHeight or 22)
+		tg.anchor:SetPoint("CENTER", tg)
+		tg.title = tg.anchor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		tg.title:SetJustifyH("CENTER")
+		tg.title:SetPoint("CENTER", tg.anchor)
+		tg.title:SetText(L["Group %d"]:format(i))
+		self:AttachTestDragHandlers(tg.anchor, tg, L["Group %d"]:format(i))
+
+		tg.units = {}
+		for j = 1, 5 do
+			tg.units[j] = self:CreateTestUnitFrame(tg, false)
+		end
+		tg:Hide()
+		self.testGroups[i] = tg
+	end
+
+	local tp = CreateFrame("Frame", "sRaidFramesTestPetGroupBase", tm)
+	tp:SetSize(layout.headerWidth or 90, layout.headerHeight or 22)
+	tp:SetMovable(true)
+	tp.isPetGroup = true
+	tp.anchor = CreateFrame("Button", nil, tp)
+	tp.anchor:SetSize(layout.headerWidth or 90, layout.headerHeight or 22)
+	tp.anchor:SetPoint("CENTER", tp)
+	tp.title = tp.anchor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	tp.title:SetJustifyH("CENTER")
+	tp.title:SetPoint("CENTER", tp.anchor)
+	tp.title:SetText(L["Pets"])
+	self:AttachTestDragHandlers(tp.anchor, tp, L["Pets"])
+	tp.units = {}
+	for j = 1, #TEST_PET_SAMPLES do
+		tp.units[j] = self:CreateTestUnitFrame(tp, true)
+	end
+	tp:Hide()
+	self.testPetGroup = tp
+end
+
+function sRaidFrames:ApplyTestSampleToFrame(f, sample, inParty, petMode)
+	local cc = (RAID_CLASS_COLORS and RAID_CLASS_COLORS[sample.class]) or { r = 1, g = 1, b = 1 }
+	local dispName = self:FormatTestName(sample.first, sample.second, sample.full)
+	f.title:SetText(dispName)
+	f.title:SetTextColor(cc.r, cc.g, cc.b, 1)
+
+	local bg = self.opt.BackgroundColor
+	local bd = self.opt.BorderColor
+	local bgR, bgG, bgB, bgA = bg.r, bg.g, bg.b, bg.a or 1
+	local bdR, bdG, bdB, bdA = bd.r, bd.g, bd.b, bd.a or 1
+
+	if sample.dispel and DISPEL_BORDER_COLORS[sample.dispel] then
+		local dc = DISPEL_BORDER_COLORS[sample.dispel]
+		bdR, bdG, bdB, bdA = dc.r, dc.g, dc.b, 1
+		bgR, bgG, bgB = dc.r * 0.42, dc.g * 0.42, dc.b * 0.42
+	end
+	if sample.aggro then
+		bdR, bdG, bdB, bdA = 0.95, 0.15, 0.15, 1
+	end
+	if sample.dbm then
+		bdR, bdG, bdB, bdA = 1.0, 0.25, 0.0, 1
+	end
+
+	f:SetBackdropColor(bgR, bgG, bgB, bgA)
+	if self.opt.Border then
+		f:SetBackdropBorderColor(bdR, bdG, bdB, bdA)
+	end
+	f:SetAlpha((self.opt.RangeCheck and sample.oor) and (self.opt.RangeAlpha or 0.5) or 1)
+
+	local invert = self.opt.Invert and true or false
+	if f.hpbar.SetReverseFill then f.hpbar:SetReverseFill(invert) end
+	if f.healbar and f.healbar.SetReverseFill then f.healbar:SetReverseFill(invert) end
+	if f.absorbbar and f.absorbbar.SetReverseFill then f.absorbbar:SetReverseFill(invert) end
+	self:SyncHealPredictionOrientation(f)
+
+	if sample.dead then
+		f.hpbar:SetMinMaxValues(0, 100)
+		f.hpbar:SetValue(0)
+		f.hpbar.text:SetText("|cffff0000" .. L["Dead"] .. "|r")
+		if f.healbar then f.healbar:Hide() end
+		if f.absorbbar then f.absorbbar:Hide() end
+		f.mpbar:SetValue(0)
+	else
+		local maxHp = 4000
+		local curHp = floor(maxHp * sample.hp + 0.5)
+		local hpp = ceil(sample.hp * 100)
+		local hpVal = (not f.hpbar.SetReverseFill and invert) and (maxHp - curHp) or curHp
+		f.hpbar:SetMinMaxValues(0, maxHp)
+		f.hpbar:SetValue(hpVal)
+		if self.opt.HealthBarColorByClass then
+			f.hpbar:SetStatusBarColor(cc.r, cc.g, cc.b, 1)
+		else
+			f.hpbar:SetStatusBarColor(self:GetHPSeverity(sample.hp))
+		end
+
+		local hfmt = self.opt.HealthFormat
+		local htxt = nil
+		if not (self.opt.HideMaxHealth and curHp == maxHp) then
+			if hfmt == "percent" then htxt = hpp .. "%"
+			elseif hfmt == "deficit" then htxt = (curHp < maxHp) and (curHp - maxHp) or nil
+			elseif hfmt == "current" then htxt = curHp
+			elseif hfmt == "curmax" then htxt = curHp .. "/" .. maxHp
+			elseif hfmt == "curdeficit" then htxt = (curHp < maxHp) and (curHp .. " |cffff0000" .. (curHp - maxHp) .. "|r") or maxHp
+			end
+		end
+		f.hpbar.text:SetText(htxt)
+		local htc = self.opt.HealthTextColor
+		if htc then
+			f.hpbar.text:SetTextColor(htc.r, htc.g, htc.b, htc.a or 1)
+		end
+
+		if f.healbar then
+			if self.opt.ShowHealPrediction and sample.inc and sample.inc > 0 then
+				f.healbar:SetMinMaxValues(0, maxHp)
+				f.healbar:SetValue(floor(maxHp * sample.inc))
+				f.healbar:Show()
+			else
+				f.healbar:Hide()
+			end
+		end
+		if f.absorbbar then
+			if self.opt.ShowAbsorbBar and sample.absorb and sample.absorb > 0 then
+				f.absorbbar:SetMinMaxValues(0, maxHp)
+				f.absorbbar:SetValue(floor(maxHp * sample.absorb))
+				f.absorbbar:Show()
+			else
+				f.absorbbar:Hide()
+			end
+		end
+
+		local ptype = sample.power or Compat.POWER_MANA
+		local pcol = PowerBarColor and (PowerBarColor[ptype] or PowerBarColor[Compat.POWER_MANA]) or { r = 0.1, g = 0.4, b = 0.9 }
+		if self.opt.PowerFilter and self.opt.PowerFilter[ptype] then
+			f.mpbar:SetMinMaxValues(0, 100)
+			f.mpbar:SetValue(floor((sample.mp or 0.7) * 100))
+			f.mpbar:SetStatusBarColor(pcol.r, pcol.g, pcol.b, 1)
+		else
+			f.mpbar:SetValue(0)
+		end
+	end
+
+	f.statustext:SetText(sample.dbm and ("|cffff5522" .. L["! BOSS SKILL !"] .. "|r") or nil)
+	if f.dbmAlertIcon then
+		if sample.dbm then
+			f.dbmAlertIcon.texture:SetTexture("Interface\\Icons\\Spell_Shadow_ShadowBolt")
+			f.dbmAlertIcon:Show()
+		else
+			f.dbmAlertIcon:Hide()
+		end
+	end
+
+	if f.raidMarker then
+		if sample.mark and SetRaidTargetIconTexture then
+			SetRaidTargetIconTexture(f.raidMarker, sample.mark)
+			f.raidMarker:Show()
+		else
+			f.raidMarker:Hide()
+		end
+	end
+
+	if f.classIcon then
+		if self.opt.ShowClassIcon and SetClassIconTexture(f.classIcon, sample.class) then
+			f.classIcon:Show()
+		else
+			f.classIcon:Hide()
+		end
+	end
+
+	if f.levelText then
+		if inParty then
+			f.levelText:SetText("Lv." .. (sample.lvl or 60))
+			f.levelText:Show()
+		else
+			f.levelText:Hide()
+		end
+	end
+
+	local showPortrait = self:ShouldShowPortrait()
+	if f.portrait then
+		if showPortrait then
+			if sample.isPlayer and SetPortraitTexture then
+				pcall(SetPortraitTexture, f.portrait, "player")
+				f.portrait:SetTexCoord(0, 1, 0, 1)
+			else
+				f.portrait:SetTexture("Interface\\CharacterFrame\\TemporaryPortrait-" .. (sample.gender or "Male") .. "-" .. (sample.race or "Human"))
+				f.portrait:SetTexCoord(0, 1, 0, 1)
+			end
+		end
+	end
+
+	if f.tankIcon then
+		local shown = false
+		if self.opt.ShowTankIcons then
+			if inParty and sample.role and PARTY_ROLE_ATLAS[sample.role] then
+				local atlas = PARTY_ROLE_ATLAS[sample.role]
+				if _G.C_Texture and _G.C_Texture.GetAtlasInfo and _G.C_Texture.GetAtlasInfo(atlas) then
+					f.tankIcon:SetAtlas(atlas)
+				else
+					local c = PARTY_ROLE_COORDS[sample.role]
+					f.tankIcon:SetTexture("Interface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES")
+					f.tankIcon:SetTexCoord(c[1], c[2], c[3], c[4])
+				end
+				shown = true
+			elseif sample.tank == "MT" then
+				local atlas = "RaidFrame-Icon-MainTank"
+				if _G.C_Texture and _G.C_Texture.GetAtlasInfo and _G.C_Texture.GetAtlasInfo(atlas) then
+					f.tankIcon:SetAtlas(atlas)
+				else
+					f.tankIcon:SetTexture("Interface\\GroupFrame\\UI-Group-MainTankIcon")
+					f.tankIcon:SetTexCoord(0, 1, 0, 1)
+				end
+				shown = true
+			elseif sample.tank == "OT" then
+				local atlas = "RaidFrame-Icon-MainAssist"
+				if _G.C_Texture and _G.C_Texture.GetAtlasInfo and _G.C_Texture.GetAtlasInfo(atlas) then
+					f.tankIcon:SetAtlas(atlas)
+				else
+					f.tankIcon:SetTexture("Interface\\GroupFrame\\UI-Group-MainAssistIcon")
+					f.tankIcon:SetTexCoord(0, 1, 0, 1)
+				end
+				shown = true
+			end
+		end
+		if shown then f.tankIcon:Show() else f.tankIcon:Hide() end
+	end
+
+	if f.leaderIcon then
+		if self.opt.ShowLeaderIcon and sample.lead then
+			local atlas = "UI-HUD-UnitFrame-Player-Group-LeaderIcon"
+			if _G.C_Texture and _G.C_Texture.GetAtlasInfo and _G.C_Texture.GetAtlasInfo(atlas) then
+				f.leaderIcon:SetAtlas(atlas)
+			else
+				f.leaderIcon:SetTexture("Interface\\GroupFrame\\UI-Group-LeaderIcon")
+				f.leaderIcon:SetTexCoord(0, 1, 0, 1)
+			end
+			f.leaderIcon:ClearAllPoints()
+			if showPortrait and f.portraitFrame then
+				f.leaderIcon:SetPoint("TOPLEFT", f.portraitFrame, "TOPLEFT", -2, 2)
+			elseif f.tankIcon and f.tankIcon:IsShown() then
+				f.leaderIcon:SetPoint("TOPLEFT", f.tankIcon, "TOPRIGHT", 1, 0)
+			else
+				f.leaderIcon:SetPoint("TOPLEFT", f.hpbar, "TOPLEFT", 1, 0)
+			end
+			f.leaderIcon:Show()
+		else
+			f.leaderIcon:Hide()
+		end
+	end
+
+	if f.raidMarker and f.hpbar then
+		f.raidMarker:ClearAllPoints()
+		if not showPortrait then
+			local leftShift = 1 + ((f.tankIcon and f.tankIcon:IsShown()) and 12 or 0) + ((f.leaderIcon and f.leaderIcon:IsShown()) and 12 or 0)
+			f.raidMarker:SetPoint("LEFT", f.hpbar, "LEFT", leftShift, 0)
+		else
+			f.raidMarker:SetPoint("LEFT", f.hpbar, "LEFT", 1, 0)
+		end
+	end
+
+	if f.voiceIcon then
+		if sample.voice then
+			SetVoiceIconTexture(f.voiceIcon)
+			f.voiceIcon:Show()
+		else
+			f.voiceIcon:Hide()
+		end
+	end
+
+	-- Sample Buff / Debuff icons
+	local lastBuff = nil
+	for i = 1, 5 do
+		local b = f["buff" .. i]
+		if b then
+			if i <= 2 and (self.opt.BuffType == "both" or self.opt.BuffType == "buffs" or (self.opt.BuffType == "buffsifnotdebuffed" and not sample.dispel)) and not sample.dead then
+				b.texture:SetTexture(i == 1 and "Interface\\Icons\\Spell_Holy_WordFortitude" or "Interface\\Icons\\Spell_Holy_DivineSpirit")
+				SetAuraButtonBorder(b, 0.2, 0.65, 1.0, 1.0)
+				b:Show()
+				lastBuff = b
+			else
+				b:Hide()
+			end
+		end
+	end
+	for i = 1, 2 do
+		local a = f["aura" .. i]
+		if a then
+			if i == 1 and sample.dispel and (self.opt.BuffType == "both" or self.opt.BuffType == "debuffs" or self.opt.BuffType == "buffsifnotdebuffed") then
+				local dc = DISPEL_BORDER_COLORS[sample.dispel] or { r = 0.8, g = 0.2, b = 0.2 }
+				a.texture:SetTexture("Interface\\Icons\\Spell_Shadow_CurseOfTounges")
+				SetAuraButtonBorder(a, dc.r, dc.g, dc.b, 1.0)
+				a:ClearAllPoints()
+				if lastBuff then
+					a:SetPoint("TOPRIGHT", lastBuff, "TOPLEFT", -1, 0)
+				else
+					local curLayout = self:GetLayout()
+					a:SetPoint("TOPRIGHT", f, "TOPRIGHT", -(curLayout and curLayout.padX or 4), -(curLayout and curLayout.padY or 4))
+				end
+				a:Show()
+			else
+				a:Hide()
+			end
+		end
+	end
+
+	-- Attached pet bar preview
+	if f.petframe then
+		local pf = f.petframe
+		if petMode == "attached" and sample.pet and not sample.dead then
+			local pt = sample.pet
+			if pf.portrait and inParty then
+				pf.portrait:SetTexture(pt.icon or "Interface\\Icons\\Ability_Mount_SpectralTiger")
+			end
+			pf.hpbar:SetMinMaxValues(0, 100)
+			pf.hpbar:SetValue(floor(pt.hp * 100))
+			pf.hpbar:SetStatusBarColor(self:GetHPSeverity(pt.hp))
+			if pf.hpbar.text then
+				if inParty then
+					pf.hpbar.text:SetText(pt.name .. " " .. floor(pt.hp * 100) .. "%")
+					pf.hpbar.text:Show()
+				else
+					pf.hpbar.text:Hide()
+				end
+			end
+			if pf.healbar then
+				if self.opt.ShowHealPrediction and pt.inc and pt.inc > 0 then
+					pf.healbar:SetMinMaxValues(0, 100)
+					pf.healbar:SetValue(floor(pt.inc * 100))
+					pf.healbar:Show()
+				else
+					pf.healbar:Hide()
+				end
+			end
+			if pf.buffs then
+				for bi = 1, #pf.buffs do
+					if inParty and self.opt.ShowPetBuffs and pt.buffs and pt.buffs[bi] then
+						pf.buffs[bi].texture:SetTexture(pt.buffs[bi])
+						pf.buffs[bi]:Show()
+					else
+						pf.buffs[bi]:Hide()
+					end
+				end
+			end
+			pf:Show()
+		else
+			pf:Hide()
+		end
+	end
+end
+
+function sRaidFrames:ApplyTestPetSampleToFrame(f, pt)
+	local cc = (RAID_CLASS_COLORS and RAID_CLASS_COLORS[pt.ownerClass]) or { r = 0.7, g = 0.9, b = 0.7 }
+	f.title:SetText(pt.name)
+	f.title:SetTextColor(cc.r, cc.g, cc.b, 1)
+
+	local bg = self.opt.BackgroundColor
+	local bd = self.opt.BorderColor
+	local bgR, bgG, bgB, bgA = bg.r, bg.g, bg.b, bg.a or 1
+	local bdR, bdG, bdB, bdA = bd.r, bd.g, bd.b, bd.a or 1
+	if pt.dispel and DISPEL_BORDER_COLORS[pt.dispel] then
+		local dc = DISPEL_BORDER_COLORS[pt.dispel]
+		bdR, bdG, bdB, bdA = dc.r, dc.g, dc.b, 1
+		bgR, bgG, bgB = dc.r * 0.42, dc.g * 0.42, dc.b * 0.42
+	end
+	f:SetBackdropColor(bgR, bgG, bgB, bgA)
+	if self.opt.Border then f:SetBackdropBorderColor(bdR, bdG, bdB, bdA) end
+	f:SetAlpha(1)
+
+	local invert = self.opt.Invert and true or false
+	if f.hpbar.SetReverseFill then f.hpbar:SetReverseFill(invert) end
+	if f.healbar and f.healbar.SetReverseFill then f.healbar:SetReverseFill(invert) end
+	if f.absorbbar and f.absorbbar.SetReverseFill then f.absorbbar:SetReverseFill(invert) end
+	self:SyncHealPredictionOrientation(f)
+
+	local maxHp = 2000
+	local curHp = floor(maxHp * pt.hp + 0.5)
+	local hpp = ceil(pt.hp * 100)
+	local hpVal = (not f.hpbar.SetReverseFill and invert) and (maxHp - curHp) or curHp
+	f.hpbar:SetMinMaxValues(0, maxHp)
+	f.hpbar:SetValue(hpVal)
+	f.hpbar:SetStatusBarColor(self:GetHPSeverity(pt.hp))
+
+	local hfmt = self.opt.HealthFormat
+	local htxt = nil
+	if not (self.opt.HideMaxHealth and curHp == maxHp) then
+		if hfmt == "percent" then htxt = hpp .. "%"
+		elseif hfmt == "deficit" then htxt = (curHp < maxHp) and (curHp - maxHp) or nil
+		elseif hfmt == "current" then htxt = curHp
+		elseif hfmt == "curmax" then htxt = curHp .. "/" .. maxHp
+		elseif hfmt == "curdeficit" then htxt = (curHp < maxHp) and (curHp .. " |cffff0000" .. (curHp - maxHp) .. "|r") or maxHp
+		end
+	end
+	f.hpbar.text:SetText(htxt)
+	local htc = self.opt.HealthTextColor
+	if htc then
+		f.hpbar.text:SetTextColor(htc.r, htc.g, htc.b, htc.a or 1)
+	end
+	if f.healbar then
+		if self.opt.ShowHealPrediction and pt.inc and pt.inc > 0 then
+			f.healbar:SetMinMaxValues(0, maxHp)
+			f.healbar:SetValue(floor(maxHp * pt.inc))
+			f.healbar:Show()
+		else
+			f.healbar:Hide()
+		end
+	end
+	if f.absorbbar then
+		if self.opt.ShowAbsorbBar and pt.absorb and pt.absorb > 0 then
+			f.absorbbar:SetMinMaxValues(0, maxHp)
+			f.absorbbar:SetValue(floor(maxHp * pt.absorb))
+			f.absorbbar:Show()
+		else
+			f.absorbbar:Hide()
+		end
+	end
+	if f.portrait and self:ShouldShowPortrait() then
+		f.portrait:SetTexture(pt.icon or "Interface\\Icons\\Ability_Hunter_BeastCall")
+		f.portrait:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	end
+	f.mpbar:SetValue(80)
+	f.mpbar:SetStatusBarColor(0.2, 0.55, 0.95, 1)
+	if f.classIcon then f.classIcon:Hide() end
+	if f.levelText then f.levelText:Hide() end
+	if f.tankIcon then f.tankIcon:Hide() end
+	if f.leaderIcon then f.leaderIcon:Hide() end
+	if f.voiceIcon then f.voiceIcon:Hide() end
+	if f.raidMarker then f.raidMarker:Hide() end
+	if f.dbmAlertIcon then f.dbmAlertIcon:Hide() end
+	local lastPetBuff = nil
+	local allowPetBuffs = self.opt.ShowPetBuffs and (self.opt.BuffType == "both" or self.opt.BuffType == "buffs" or (self.opt.BuffType == "buffsifnotdebuffed" and not pt.dispel))
+	local allowPetDebuffs = self.opt.ShowPetBuffs and (self.opt.BuffType == "both" or self.opt.BuffType == "debuffs" or self.opt.BuffType == "buffsifnotdebuffed")
+	for i = 1, 5 do
+		local b = f["buff" .. i]
+		if b then
+			if allowPetBuffs and pt.buffs and pt.buffs[i] then
+				b.texture:SetTexture(pt.buffs[i])
+				SetAuraButtonBorder(b, 0.2, 0.75, 0.95, 1)
+				b:Show()
+				lastPetBuff = b
+			else
+				b:Hide()
+			end
+		end
+	end
+	for i = 1, 2 do
+		local a = f["aura" .. i]
+		if a then
+			if i == 1 and allowPetDebuffs and pt.dispel then
+				local dc = DISPEL_BORDER_COLORS[pt.dispel] or { r = 0.8, g = 0.2, b = 0.2 }
+				a.texture:SetTexture("Interface\\Icons\\Spell_Holy_DispelMagic")
+				SetAuraButtonBorder(a, dc.r, dc.g, dc.b, 1)
+				a:ClearAllPoints()
+				if lastPetBuff then
+					a:SetPoint("TOPRIGHT", lastPetBuff, "TOPLEFT", -1, 0)
+				elseif f.hpbar then
+					a:SetPoint("TOPRIGHT", f.hpbar, "TOPRIGHT", -1, -1)
+				end
+				a:Show()
+			else
+				a:Hide()
+			end
+		end
+	end
+end
+
+function sRaidFrames:LayoutTestGroupChildren(groupFrame, count, growth, stepX, stepY, w, h)
+	local anchor = groupFrame.anchor
+	for j = 1, #groupFrame.units do
+		local u = groupFrame.units[j]
+		if j <= count then
+			u:ClearAllPoints()
+			local dx = (j - 1) * stepX
+			local dy = (j - 1) * stepY
+			if growth == "up" then
+				u:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, dy)
+			elseif growth == "right" then
+				u:SetPoint("TOPLEFT", anchor, "TOPRIGHT", dx, 0)
+			elseif growth == "left" then
+				u:SetPoint("TOPRIGHT", anchor, "TOPLEFT", -dx, 0)
+			else
+				u:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -dy)
+			end
+			u:Show()
+		else
+			u:Hide()
+		end
+	end
+end
+
+function sRaidFrames:RefreshTestLayout()
+	if not self.testMaster or self.testMode == "off" then return end
+	local layout = self:GetLayout()
+	local w = layout.unitframeWidth or 90
+	local h = layout.unitframeHeight or 36
+	local hdrH = layout.headerHeight or 22
+
+	self.testMaster:SetScale(self.opt.Scale or 1)
+	local inParty = (self.testMode == "party")
+	local baseSpacing = inParty and (self.opt.PartySpacing or 8) or (self.opt.Spacing or 0)
+	local petReserve = self:GetPartyPetSpacingReserve()
+
+	-- Mirror saved / real positions onto test groups
+	for i = 1, 8 do
+		local tg = self.testGroups[i]
+		local rf = self.groupframes[i]
+		tg:SetSize(w, hdrH)
+		tg.anchor:SetSize(w, hdrH)
+		if rf and rf:GetLeft() and rf:GetTop() then
+			tg:ClearAllPoints()
+			tg:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", rf:GetLeft(), rf:GetTop())
+		end
+	end
+	if self.testPetGroup and self.petGroup then
+		self.testPetGroup:SetSize(w, hdrH)
+		self.testPetGroup.anchor:SetSize(w, hdrH)
+		if self.petGroup:GetLeft() and self.petGroup:GetTop() then
+			self.testPetGroup:ClearAllPoints()
+			self.testPetGroup:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", self.petGroup:GetLeft(), self.petGroup:GetTop())
+		elseif self.testGroups[1] then
+			self.testPetGroup:ClearAllPoints()
+			self.testPetGroup:SetPoint("TOPLEFT", self.testGroups[1], "TOPRIGHT", 10, 0)
+		end
+	end
+
+	local numGroups = 8
+	local unitsPerGroup = 5
+	if self.testMode == "party" then
+		numGroups = 1
+		unitsPerGroup = self.opt.ShowSelfInParty and 5 or 4
+	elseif self.testMode == "raid10" then
+		numGroups = 2
+	elseif self.testMode == "raid20" then
+		numGroups = 4
+	end
+
+	for _, f in pairs(self.testFrames) do
+		layout.StyleUnitFrame(f)
+	end
+	for _, f in pairs(self.testPetFrames) do
+		layout.StyleUnitFrame(f)
+	end
+
+	for i = 1, 8 do
+		local tg = self.testGroups[i]
+		if i <= numGroups then
+			local growth = (inParty and i == 1) and (self.opt.PartyGrowth or "down") or (self.opt.Growth["default"] or "down")
+			if not (inParty and i == 1) and self.opt.Growth[self.opt.GroupSetup] and self.opt.Growth[self.opt.GroupSetup][i] and self.opt.Growth[self.opt.GroupSetup][i] ~= "default" then
+				growth = self.opt.Growth[self.opt.GroupSetup][i]
+			end
+			local stepX = w + baseSpacing
+			local stepY = h + baseSpacing + petReserve
+			if self.opt.ShowGroupTitles or not self.opt.Locked then
+				tg.anchor:Show()
+				tg.title:SetText(inParty and L["Party"] or L["Group %d"]:format(i))
+			else
+				tg.anchor:Hide()
+			end
+			self:LayoutTestGroupChildren(tg, unitsPerGroup, growth, stepX, stepY, w, h)
+			tg:Show()
+		else
+			tg:Hide()
+		end
+	end
+
+	local petMode = self:GetCurrentPetMode()
+	if self.testPetGroup and petMode == "group" then
+		local petCount = inParty and 2 or #TEST_PET_SAMPLES
+		local growth = inParty and (self.opt.PartyGrowth or "down") or (self.opt.Growth["default"] or "down")
+		if self.opt.ShowGroupTitles or not self.opt.Locked then
+			self.testPetGroup.anchor:Show()
+		else
+			self.testPetGroup.anchor:Hide()
+		end
+		self:LayoutTestGroupChildren(self.testPetGroup, petCount, growth, w + baseSpacing, h + baseSpacing, w, h)
+		self.testPetGroup:Show()
+	elseif self.testPetGroup then
+		self.testPetGroup:Hide()
+	end
+end
+
+function sRaidFrames:RefreshTestFrames()
+	if not self.testMaster or self.testMode == "off" then return end
+	self:RefreshTestLayout()
+
+	local inParty = (self.testMode == "party")
+	local petMode = self:GetCurrentPetMode()
+	if inParty then
+		local tg = self.testGroups[1]
+		local startIdx = self.opt.ShowSelfInParty and 1 or 2
+		local slot = 1
+		for idx = startIdx, #TEST_PARTY_SAMPLES do
+			local f = tg.units[slot]
+			if f then
+				self:ApplyTestSampleToFrame(f, TEST_PARTY_SAMPLES[idx], true, petMode)
+			end
+			slot = slot + 1
+		end
+	else
+		local numGroups = (self.testMode == "raid10") and 2 or ((self.testMode == "raid20") and 4 or 8)
+		local rIdx = 1
+		for g = 1, numGroups do
+			local tg = self.testGroups[g]
+			for u = 1, 5 do
+				local f = tg.units[u]
+				if f then
+					self:ApplyTestSampleToFrame(f, self:BuildTestRaidSample(rIdx), false, petMode)
+				end
+				rIdx = rIdx + 1
+			end
+		end
+	end
+
+	if petMode == "group" and self.testPetGroup then
+		local petCount = inParty and 2 or #TEST_PET_SAMPLES
+		for i = 1, petCount do
+			local pf = self.testPetGroup.units[i]
+			if pf then
+				self:ApplyTestPetSampleToFrame(pf, TEST_PET_SAMPLES[i])
+			end
+		end
+	end
+end
+
+function sRaidFrames:ExitTestMode(fromCombat)
+	if not self.testMode or self.testMode == "off" then return end
+	self.testMode = "off"
+	if self.testGroups then
+		for _, tg in pairs(self.testGroups) do
+			pcall(tg.StopMovingOrSizing, tg)
+		end
+	end
+	if self.testPetGroup then
+		pcall(self.testPetGroup.StopMovingOrSizing, self.testPetGroup)
+	end
+	if self.testMaster then
+		self.testMaster:Hide()
+	end
+	if fromCombat or privateFuncs.IsInCombat() then
+		self:ScheduleLeaveCombatAction("SetGroupFilters")
+		self:ScheduleLeaveCombatAction("SetGrowth")
+		self:ScheduleLeaveCombatAction("ApplyLayout")
+		if fromCombat then
+			print("|cff33ff99sRaidFrames:|r " .. (L["Test mode exited automatically on entering combat."] or "Test mode exited automatically on entering combat."))
+		end
+	else
+		self:SetGroupFilters()
+		self:SetGrowth()
+		self:ApplyLayout()
+	end
+	local ACR = LibStub("AceConfigRegistry-3.0", true)
+	if ACR then ACR:NotifyChange("sRaidFrames") end
+end
+
+function sRaidFrames:SetTestMode(mode)
+	mode = mode or "off"
+	if mode == "off" then
+		self:ExitTestMode(false)
+		return
+	end
+	if privateFuncs.IsInCombat() then
+		print("|cffff5555sRaidFrames:|r " .. (L["Cannot start test mode while in combat."] or "Cannot start test mode while in combat."))
+		return
+	end
+	if IsInRaid() or (self.opt.ShowInParty and IsInGroup()) then
+		print("|cffffcc00sRaidFrames:|r " .. (L["Leave your current group before using solo test mode."] or "Leave your current group before using solo test mode."))
+		self.testMode = "off"
+		return
+	end
+	self.testMode = mode
+	self:CreateTestInfrastructure()
+	self.testMaster:Show()
+	self:ApplyLayout()
+	self:RefreshTestFrames()
+	local ACR = LibStub("AceConfigRegistry-3.0", true)
+	if ACR then ACR:NotifyChange("sRaidFrames") end
 end
 
 createLDBLauncher = function()

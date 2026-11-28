@@ -1,18 +1,18 @@
-# sRaidFrames (WoW: Forever Edition) — V1.1.2
+# sRaidFrames (WoW: Forever Edition) — V1.1.3
 
 **sRaidFrames (WoW: Forever Edition)** is a lightweight, modernized, combat-safe continuation of the classic *CT_RaidAssist*-style party and raid frames for **all classes and roles (Tanks, Healers, and DPS)**, engineered specifically for **World of Warcraft: Forever (`1.60.x` / Interface `16001`)** with cross-client Classic compatibility.
 
-Built around a **Pure Target Selection** philosophy — **Left-Click to Target, Right-Click for the native Blizzard Unit Menu, zero click-casting automation** — it pairs nostalgic, high-contrast card aesthetics with Forever's native `CustomAuraContainerTemplate` engine and full Secret-Value protection for zero taint and zero combat errors.
+Built around a **Pure Target Selection** philosophy — **Left-Click to Target, Right-Click for the native Blizzard Unit Menu, zero click-casting automation** — it pairs nostalgic, high-contrast card aesthetics with Forever's native `CustomAuraContainerTemplate` engine and full Secret-Value protection.
 
 ---
 
 ## Key Features
 
 ### 1. Classic Card Aesthetics & Dual-Name Support
-- **High-Contrast Sky-Blue Card Backdrop**: Classic steel/sky-blue backdrop (`{0.22, 0.35, 0.50}`) with crisp white borders and deep health/mana wells so Mage cyan and all class-colored names stand out clearly.
+- **Deep Steel-Blue Translucent Backdrop**: Refined steel-blue translucent card backdrop (`58%` opacity) with crisp white borders and deep health/mana wells so Mage cyan, Shaman blue, Priest white, and all class-colored names stand out clearly.
 - **Class-Colored Unit Names**: Teammate names are always colored by class, with health bars optionally colored by class or smooth HP-severity gradient (green to red).
-- **Dual-Name Display (`16001`)**: Full support for Forever's dual-name system — display **Full Name (`Character <Account>`)**, **First Name Only**, or **Second Name Only**.
-- **Pure Targeting & Native Context Menu**: Left-click strictly selects the unit; right-click opens the standard Blizzard unit menu (whisper, inspect, trade, focus, promote). No click-cast spell hijacking.
+- **Dual-Name Display (`16001`)**: Full support for Forever's dual-name system — display **Full Name**, **First Name Only**, or **Second Name Only**.
+- **Pure Targeting & Native Context Menu**: Left-click strictly selects the unit; right-click opens the standard Blizzard unit menu (whisper, inspect, trade, focus, promote). No click-cast spell hijacking; works cleanly with mouseover macros and Clique.
 
 ### 2. Blizzard-Style 5-Player Party Mode
 - **Full 5-Player Party by Default (Optional Hide Self)**: Shows all 5 party members out of the box (`Show myself in party` enabled by default), with a 1-click toggle in `/srf` if you prefer showing only your 4 teammates.
@@ -25,36 +25,39 @@ Built around a **Pure Target Selection** philosophy — **Left-Click to Target, 
   - **Bottom-Left**: Live **Voice Chat speaker indicator** that lights up while a teammate is speaking.
 - **Right-Side Info Column**: Dedicated column to the right of the health and power bars showing each teammate's **Class Icon** above their **Level (`Lv.60`)**.
 
-### 3. 40-Player Raid Grid, Safe Dragging & Scaling
-- **3 Preset Raid Formations**: Defaults to a **4x2 Compact Raid Grid** (Groups 1–4 on top, Groups 5–8 on bottom), plus **Horizontal** (1x8) and **Vertical** (2x4) presets.
+### 3. 40-Player Raid Grid, Solo Test Preview & Safe Dragging
+- **Out-of-Combat Solo Test Preview (`/srf`)**: Preview **5-Player Party** (with 2D portraits & pets) and **10 / 20 / 40-Player Raid** layouts (both attached and separate pet modes) solo out of combat; drag and adjust layout live, with automatic exit upon entering combat or joining a group.
+- **Classic Left-Side Anchor & 3 Preset Formations**: Anchored cleanly on the classic left side by default; defaults to a **4x2 Compact Raid Grid** (Groups 1–4 on top, Groups 5–8 on bottom), plus **Horizontal** (1x8) and **Vertical** (2x4) presets.
 - **Unified Group Sort Order**: Sort both 5-player Party and By-Group Raid frames by **Tank -> DPS -> Healer (Default)**, **Tank -> Healer -> DPS**, **Blizzard Default**, or **Alphabetical (A–Z)**, while preserving per-group custom sort overrides.
 - **Locked by Default & Free Dragging**: Frames default to **Locked** to prevent accidental dragging in combat. Unlock in `/srf` to drag any group by its title bar **or directly by any unit frame**, hold **Alt + Drag** to move all groups and the pet group together, adjust **Overall frame scale** (`0.5`–`2.0`) in *Layout & Positioning*, or click **Reset position**.
-- **Combat-Safe Blizzard Frame Hiding & Edit Mode Friendly**: Safely hides Blizzard's default Party and Compact Raid Frames without combat taint, and yields cleanly whenever Blizzard's UI Edit Mode is opened.
+- **Combat-Safe Blizzard Frame Hiding & Edit Mode Friendly**: Safely hides Blizzard's default Party and Compact Raid Frames using native non-tainting APIs, and yields cleanly whenever Blizzard's UI Edit Mode is opened.
 
 ### 4. Three-Mode Pet Health Bar System (`/srf` -> Pets)
 Configure pet display independently for **5-Player Party** and **Raid**:
 - **Follow Teammate Frame**:
   - **5-Player Party**: Reserves uniform combat-safe spacing below every teammate (supporting mid-combat pet summons and Mind Control) with a compact right-aligned `48%` pet sub-bar and circular 2D pet portrait.
   - **Raid**: Tucks a sleek gold-bordered mini pet bar into the bottom-right of the owner's power bar row with zero extra frame height.
-- **Separate Pet Group**: Creates a standalone, draggable **Pets** group (`SecureGroupPetHeaderTemplate`) with owner-class colored pet names, native pet tooltips, instant mid-combat summon updates, and saved positioning.
+- **Separate Pet Group**: Creates a standalone, draggable **Pets** group (`SecureGroupPetHeaderTemplate`) with owner-class colored pet names, native pet tooltips, top absorb shield bar, instant mid-combat summon updates, and saved positioning.
 - **Pet Heal Prediction & Micro Auras**: Supports incoming heal prediction, left-click targeting, right-click pet menu, target highlight, range fade, and `9x9` low-pixel HoT / Shield / Dispel icons in the top-right corner of pet health bars *(Party Follow & Separate Pet Group modes)*.
 
-### 5. Combat-Safe Auras, Dispel Highlighting & Boss Warnings
-- **Native Forever Aura Containers**: Powered by Blizzard's `CustomAuraContainerTemplate` and `ScopedModifier` to display top-right Buffs (rightmost) and Debuffs (chained to the left) during combat lockdown without Secret-Value errors.
+### 5. Combat-Safe Auras, Hunter Feign Death & Boss Warnings
+- **Native Forever Aura Containers**: Powered by Blizzard's `CustomAuraContainerTemplate` and `ScopedModifier` to display top-right Buffs (rightmost) and Debuffs (chained to the left) during combat lockdown cleanly.
 - **Smart Class & Raid Buff Filtering**:
   - **Smart Class Mode (Default)**: Automatically filters long raid buffs to match your class (e.g., Fortitude/Spirit for Priests, Blessings for Paladins, Mark of the Wild/Thorns for Druids, Arcane Intellect for Mages, Unending Breath/Detect Invisibility for Warlocks).
   - Also supports **All Class Raid & Combat Buffs**, **Combat & Healing Buffs Only**, or **My Buffs Only**.
 - **HoTs, Shields, Defensive Cooldowns & Dispel Highlighting**: Prioritizes key HoTs, shields, Weakened Soul, and defensive cooldowns across classes; features color-coded debuff borders and combat-safe unit background tinting for Magic, Disease, Poison, and Curse effects.
+- **In-Combat Hunter Feign Death**: Displays green **Feign Death** status text and the top-right skill icon during combat without misreporting the hunter as dead.
 - **Boss & DBM / BigWigs Alerts**: Highlights teammates targeted by Boss casts or DBM / BigWigs announcements with a high-priority flame border, `! BOSS SKILL !` status text, and right-side alert icon (includes a **Test Boss/DBM warning** button in `/srf`).
 
-### 6. Healing & Raid Awareness Tools
+### 6. Absorb Shield Bar, Heal Prediction & Raid Awareness
+- **Top 3px Absorb Shield Bar**: Enabled by default along the top edge of health bars on player and standalone pet frames, fully compatible with 16001 combat APIs.
 - **Incoming Heal Prediction Bar**: Clipped pale-green heal prediction bar extending from current health (supports both standard and inverted health bars).
 - **6 Health Display Formats**: Percent, Deficit, Current, Current + Max, Current + Deficit (with % in combat), or None — plus optional **Hide health text at 100% HP**.
-- **Aggro, Range, Ready Check & Resurrection**:
+- **Aggro, Range, Ready Check, Vehicle & Resurrection**:
   - Red border highlight on teammates holding aggro (`UnitThreatSituation`).
   - Smooth out-of-range alpha fading (`RangeCheck`) using class-appropriate spell ranges.
-  - Ready Check background status highlights (Pending / Ready / Not Ready).
-  - Hardened `LibResInfo-1.0` resurrection tracking (Casting Res, Pending Accept, Soulstone, and Hunter Feign Death exclusion).
+  - Ready Check background status highlights (Pending / Ready / Not Ready) and vehicle state sync.
+  - Hardened `LibResInfo-1.0` resurrection tracking (Casting Res, Pending Accept, Soulstone).
 
 ---
 

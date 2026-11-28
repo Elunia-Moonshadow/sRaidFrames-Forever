@@ -28,7 +28,7 @@ local DEBUG_FRAME = ChatFrame3
 
 ------------------------------------------------------------------------
 
-local MAJOR, MINOR = "LibResInfo-1.0", 30
+local MAJOR, MINOR = "LibResInfo-1.0", 31
 assert(LibStub, MAJOR.." requires LibStub")
 assert(LibStub("CallbackHandler-1.0"), MAJOR.." requires CallbackHandler-1.0")
 local lib, oldminor = LibStub:NewLibrary(MAJOR, MINOR)
@@ -160,6 +160,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 	return self[event] and self[event](self, event, ...)
 end)
 
+-- On WoW 12.0+ / Forever (16001), COMBAT_LOG_EVENT_UNFILTERED is a restricted event:
+-- calling RegisterEvent or UnregisterEvent on it triggers [ADDON_ACTION_FORBIDDEN] even inside pcall!
+local CLEU_RESTRICTED = (_G.C_Secrets ~= nil)
+
 function callbacks:OnUsed(lib, callback)
 	if not next(lib.callbacksInUse) then
 		debug(1, "Callbacks in use! Starting up...")
@@ -170,6 +174,7 @@ function callbacks:OnUsed(lib, callback)
 		eventFrame:RegisterEvent("UNIT_SPELLCAST_START")
 		eventFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
 		eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+		pcall(eventFrame.RegisterUnitEvent, eventFrame, "UNIT_SPELLCAST_SENT", "player")
 		eventFrame:RegisterEvent("UNIT_AURA")
 		eventFrame:RegisterEvent("UNIT_CONNECTION")
 		eventFrame:RegisterEvent("UNIT_HEALTH")
@@ -417,7 +422,7 @@ function eventFrame:GROUP_ROSTER_UPDATE(event)
 	end
 
 	-- Unregister CLEU if there are no casts:
-	if not next(castingSingle) and not next(castingMass) then
+	if not CLEU_RESTRICTED and not next(castingSingle) and not next(castingMass) then
 		debug(3, "Nobody casting, unregistering CLEU")
 		pcall(self.UnregisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
 	end
@@ -447,16 +452,27 @@ function eventFrame:INCOMING_RESURRECT_CHANGED(event, unit)
 	if hasRes then
 		-- Unit has a res incoming. Match it to a spell.
 		local now = GetTime()
+		local matched = false
 		for caster, data in pairs(castingSingle) do
 			if not data.target and (now - data.startTime) < 10 then
 				-- Found it!
 				data.target = guid
+				matched = true
 				debug(1, ">> ResCastStarted on", nameFromGUID[guid], "by", nameFromGUID[caster], "in", event)
 				callbacks:Fire("LibResInfo_ResCastStarted", unit, guid, unitFromGUID[caster], caster, data.endTime)
 				break
+			elseif data.target == guid then
+				matched = true
+				break
 			end
 		end
-		-- TODO: Why was I searching for finished casts here???
+		-- On Forever (16001) without CLEU, UnitHasIncomingResurrection turns true once the res is pending acceptance
+		if CLEU_RESTRICTED and not matched and not hasPending[guid] then
+			local endTime = now + RESURRECT_PENDING_TIME
+			hasPending[guid] = endTime
+			self:Show()
+			callbacks:Fire("LibResInfo_ResPending", unit, guid, endTime)
+		end
 	else
 		-- Check if unit previously had any resses.
 		for caster, data in pairs(castingSingle) do
@@ -473,7 +489,9 @@ function eventFrame:INCOMING_RESURRECT_CHANGED(event, unit)
 					hasPending[guid] = nil
 					debug(1, ">> ResCastFinished", "on", nameFromGUID[guid], "by", nameFromGUID[caster], "in", event)
 					callbacks:Fire("LibResInfo_ResCastFinished", unit, guid, unitFromGUID[caster], caster)
-					pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+					if not CLEU_RESTRICTED then
+						pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+					end
 				end
 			end
 		end
@@ -481,6 +499,20 @@ function eventFrame:INCOMING_RESURRECT_CHANGED(event, unit)
 end
 
 ------------------------------------------------------------------------
+
+local pendingPlayerTargetGUID
+
+function eventFrame:UNIT_SPELLCAST_SENT(event, unit, target, castGUID, spellID)
+	if unit ~= "player" or not target or IsSecret(target) or target == "" then return end
+	if spellID and not IsSecret(spellID) and type(spellID) == "number" and not resSpells[spellID] then return end
+	pendingPlayerTargetGUID = nil
+	for g, uname in pairs(nameFromGUID) do
+		if uname == target or target:sub(1, #uname + 1) == (uname .. " ") or target:sub(1, #uname + 1) == (uname .. "-") then
+			pendingPlayerTargetGUID = g
+			break
+		end
+	end
+end
 
 function eventFrame:UNIT_SPELLCAST_START(event, unit, a1, a2, a3, a4)
 	if not unit or IsSecret(unit) then return end
@@ -514,7 +546,14 @@ function eventFrame:UNIT_SPELLCAST_START(event, unit, a1, a2, a3, a4)
 	local data = newTable()
 	data.startTime = startTime / 1000
 	data.endTime = endTime / 1000
+	if unit == "player" and pendingPlayerTargetGUID and unitFromGUID[pendingPlayerTargetGUID] then
+		data.target = pendingPlayerTargetGUID
+		pendingPlayerTargetGUID = nil
+	end
 	castingSingle[guid] = data
+	if data.target then
+		callbacks:Fire("LibResInfo_ResCastStarted", unitFromGUID[data.target], data.target, unit, guid, data.endTime)
+	end
 end
 
 function eventFrame:UNIT_SPELLCAST_SUCCEEDED(event, unit, a1, a2, a3, a4)
@@ -532,7 +571,9 @@ function eventFrame:UNIT_SPELLCAST_SUCCEEDED(event, unit, a1, a2, a3, a4)
 		castingMass[guid] = nil
 		debug(1, ">> MassResFinished", nameFromGUID[guid])
 		callbacks:Fire("LibResInfo_MassResFinished", unit, guid)
-		pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+		if not CLEU_RESTRICTED then
+			pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+		end
 		return
 	end
 
@@ -546,10 +587,19 @@ function eventFrame:UNIT_SPELLCAST_SUCCEEDED(event, unit, a1, a2, a3, a4)
 		data.finished = true -- Flag so STOP can ignore this.
 		debug(1, ">> ResCastFinished", "on", nameFromGUID[target], "by", nameFromGUID[guid], "in", event)
 		callbacks:Fire("LibResInfo_ResCastFinished", unitFromGUID[target], target, unit, guid)
+		if CLEU_RESTRICTED and unitFromGUID[target] then
+			local endTime = GetTime() + RESURRECT_PENDING_TIME
+			hasPending[target] = endTime
+			castingSingle[guid] = remTable(data)
+			self:Show()
+			callbacks:Fire("LibResInfo_ResPending", unitFromGUID[target], target, endTime)
+		end
 	end
 
-	debug(3, "Registering CLEU")
-	pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+	if not CLEU_RESTRICTED then
+		debug(3, "Registering CLEU")
+		pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
+	end
 end
 
 function eventFrame:UNIT_SPELLCAST_STOP(event, unit, a1, a2, a3, a4)
@@ -585,7 +635,7 @@ function eventFrame:UNIT_SPELLCAST_STOP(event, unit, a1, a2, a3, a4)
 	end
 
 	-- Unregister CLEU if there are no casts:
-	if not next(castingSingle) and not next(castingMass) then
+	if not CLEU_RESTRICTED and not next(castingSingle) and not next(castingMass) then
 		debug(3, "Nobody casting, unregistering CLEU")
 		pcall(self.UnregisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED")
 	end
@@ -596,6 +646,7 @@ eventFrame.UNIT_SPELLCAST_INTERRUPTED = eventFrame.UNIT_SPELLCAST_STOP
 ------------------------------------------------------------------------
 
 function eventFrame:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, combatEvent, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool)
+	if CLEU_RESTRICTED then return end
 	if not combatEvent and CombatLogGetCurrentEventInfo then
 		timestamp, combatEvent, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool = CombatLogGetCurrentEventInfo()
 	end
@@ -619,7 +670,7 @@ function eventFrame:COMBAT_LOG_EVENT_UNFILTERED(event, timestamp, combatEvent, h
 	callbacks:Fire("LibResInfo_ResPending", destUnit, destGUID, endTime)
 
 	-- Unregister CLEU if there are no casts:
-	if not next(castingSingle) and not next(castingMass) then
+	if not CLEU_RESTRICTED and not next(castingSingle) and not next(castingMass) then
 		-- TODO: Keep track of number of instant casts?
 		-- Seems unlikely that multiple casts would end so close together that this would be an issue.
 		debug(3, "Nobody casting, unregistering CLEU")
